@@ -42,6 +42,7 @@ from .tools import project as project_tools
 from .tools import resources as resource_defs
 from .tools import routing as routing_tools
 from .tools import steps as steps_tools
+from .tools import studio as studio_tools
 from .tools import transport as transport_tools
 
 
@@ -97,6 +98,7 @@ def build_server() -> FastMCP:
     arrange_tools.register(mcp)     # Arrangement Slice 1: pattern create/clone + markers
     steps_tools.register(mcp)       # Step sequencer: channel-addressed writes + readback
     project_tools.register(mcp)     # .flp readback: notes, samples/plugins, playlist
+    studio_tools.register(mcp)      # undo, swing/pitch, playlist tracks, patterns, mixer slots, sections
     resource_defs.register(mcp)     # MCP resources: fl://status, fl://project, ...
     audio_tools.register(mcp)       # Integration 2/3: audio analysis (tempo/key)
     compose_tools.register(mcp)     # Raga/scale composer: write Claude notes via the bridge

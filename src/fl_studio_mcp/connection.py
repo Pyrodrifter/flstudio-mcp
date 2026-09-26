@@ -160,6 +160,7 @@ class FLBridge:
         self._out_port = mido.open_output(out_match)
         self._in_port = mido.open_input(in_match, callback=self._on_midi)
         self._opened = True
+        self._opened_at = time.monotonic()
 
     def close(self) -> None:
         if self._in_port is not None:
@@ -203,15 +204,28 @@ class FLBridge:
             # First call after open(): give FL a moment to send a heartbeat.
             self.wait_for_heartbeat()
         if not self.is_alive():
-            raise FLNotRunning(
-                "FL Studio controller is not responding. Verify:\n"
-                "  1. FL Studio is open.\n"
-                "  2. FLStudioMCP is selected as the Controller type for the "
-                "virtual MIDI input port in Options > MIDI Settings.\n"
-                "  3. The OUTPUT virtual MIDI port has the same Port number as "
-                "the INPUT port so the script can route SysEx back to the server.\n"
-                "  4. View > Script output shows '[FLStudioMCP] Ready'."
-            )
+            raise FLNotRunning(self._not_responding_message())
+
+    def _not_responding_message(self) -> str:
+        """Say WHICH direction is broken: never heard from FL (output-port
+        setup) vs heard from FL and then it went quiet (FL closed/blocked)."""
+        age = self.heartbeat_age()
+        if age is None:
+            since = time.monotonic() - getattr(self, "_opened_at", time.monotonic())
+            return (
+                "FL Studio has sent nothing to the MCP since the bridge opened "
+                "%.0fs ago, so FL's replies are not reaching it. Verify:\n"
+                "  1. FL Studio is open and View > Script output shows "
+                "'[FLStudioMCP] Ready' (if it does, the problem is steps 2-4).\n"
+                "  2. Options > MIDI Settings > Output: 'FLStudioMCP TX' is enabled "
+                "with the SAME Port number as the 'FLStudioMCP RX' input.\n"
+                "  3. 'FLStudioMCP TX' is NOT also enabled in the Input list.\n"
+                "  4. loopMIDI hasn't muted either port (feedback detection).\n"
+                "FL restarts can drop the output-port assignment." % since)
+        return (
+            "FL Studio stopped responding: last heartbeat %.0fs ago. FL may have "
+            "closed, the FLStudioMCP script may have been reloaded or crashed "
+            "(check View > Script output), or a modal dialog is blocking FL." % age)
 
     # -- request / response --------------------------------------------------
 

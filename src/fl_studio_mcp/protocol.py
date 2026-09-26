@@ -161,6 +161,13 @@ CMD_STEPS_READ = "steps_read"                          # getGridBit scan (paged)
 CMD_PATTERN_SET_LENGTH = "pattern_set_length"          # patterns.setPatternLength (beats)
 CMD_PROJECT_INFO = "project_info"                      # window title (project name)
 CMD_PROJECT_SAVE = "project_save"                      # FPT_Save; refused if untitled
+CMD_UNDO = "undo"                                      # general.undoUp / undoDown
+CMD_CHANNEL_PROPS = "channel_props"                    # swing / pitch read+set
+CMD_PLAYLIST_TRACKS = "playlist_tracks"                # names/colours/mute (paged)
+CMD_PLAYLIST_SET_TRACK = "playlist_set_track"          # name/colour/mute one track
+CMD_PATTERN_SET = "pattern_set"                        # name/colour/length/select
+CMD_MIXER_SLOTS = "mixer_slots"                        # effect slots: name/mix/mute
+CMD_MIXER_SET_SLOT = "mixer_set_slot"                  # slot mix/mute, all slots on/off
 
 
 # ---------------------------------------------------------------------------

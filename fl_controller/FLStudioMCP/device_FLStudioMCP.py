@@ -1130,6 +1130,13 @@ def _h_steps_write(p):
                                              int(round(float(vel) * 127)))
         if pitch is not None:
             channels.setStepParameterByIndex(idx, pat, s, midi.pPitch, int(pitch))
+        pan = entry[3] if len(entry) > 3 else None       # 0..1, 0.5 = centre
+        if pan is not None:
+            channels.setStepParameterByIndex(idx, pat, s, midi.pPan,
+                                             int(round(float(pan) * 128)))
+        shift = entry[4] if len(entry) > 4 else None     # delay in ticks
+        if shift is not None:
+            channels.setStepParameterByIndex(idx, pat, s, midi.pShift, int(shift))
     want = set(int(s[0]) for s in steps)
     missing = [s for s in sorted(want) if not channels.getGridBit(idx, s)]
     return {"ok": not missing, "channel": idx, "name": channels.getChannelName(idx),
@@ -1182,6 +1189,150 @@ def _h_project_save(p):
                 "error": "Project has never been saved -- save it once in FL (Ctrl+S) first."}
     transport.globalTransport(midi.FPT_Save, 1)
     return {"ok": True, "title": title}
+
+
+# -- Phase 3: undo, channel props, playlist tracks, patterns, mixer slots ----
+
+def _undo_state():
+    out = {}
+    for key, fn in (("pos", general.getUndoHistoryPos),
+                    ("count", general.getUndoHistoryCount),
+                    ("hint", general.getUndoLevelHint)):
+        try:
+            out[key] = fn()
+        except Exception as e:
+            out[key + "_error"] = str(e)
+    return out
+
+
+def _h_undo(p):
+    """Step FL's undo history: undo `steps` times, or redo when redo=true.
+    Acts on FL's own history, so it also undoes edits made by hand."""
+    steps = max(1, min(50, int(p.get("steps", 1))))
+    before = _undo_state()
+    fn = general.undoDown if p.get("redo") else general.undoUp
+    for _ in range(steps):
+        fn()
+    return {"redo": bool(p.get("redo")), "steps": steps, "before": before,
+            "after": _undo_state()}
+
+
+def _channel_props(idx):
+    out = {"channel": idx, "name": channels.getChannelName(idx)}
+    try:
+        out["swing"] = channels.getSwing(idx)
+    except Exception as e:
+        out["swing_error"] = str(e)
+    try:
+        out["pitch_cents"] = channels.getChannelPitch(idx, 1)
+    except Exception as e:
+        out["pitch_error"] = str(e)
+    return out
+
+
+def _h_channel_props(p):
+    """Read, and optionally set, a channel's swing and pitch (cents)."""
+    idx = int(p["channel"])
+    _check_channel(idx)
+    if p.get("swing") is not None:
+        channels.setSwing(idx, int(p["swing"]))
+    if p.get("pitch_cents") is not None:
+        channels.setChannelPitch(idx, float(p["pitch_cents"]), 1)
+    return _channel_props(idx)
+
+
+def _playlist_track(t):
+    return {"track": t, "name": playlist.getTrackName(t),
+            "color": _color_out(playlist.getTrackColor(t)),
+            "muted": bool(playlist.isTrackMuted(t)), "solo": bool(playlist.isTrackSolo(t))}
+
+
+def _h_playlist_tracks(p):
+    """Playlist tracks (1-based), paged: name, colour, mute, solo."""
+    total = playlist.trackCount()
+    start = max(1, int(p.get("start", 1)))
+    count = max(1, min(25, int(p.get("count", 10))))
+    rows = [_playlist_track(t) for t in range(start, min(total, start + count - 1) + 1)]
+    return {"total": total, "tracks": rows}
+
+
+def _h_playlist_set_track(p):
+    t = int(p["track"])
+    if t < 1 or t > playlist.trackCount():
+        raise _ClientError("track %d out of range (1-%d)" % (t, playlist.trackCount()),
+                           code="bad_param")
+    if p.get("name") is not None:
+        playlist.setTrackName(t, str(p["name"]))
+    if p.get("color") is not None or p.get("r") is not None:
+        playlist.setTrackColor(t, _resolve_color(p))
+    if p.get("mute") is not None and bool(p["mute"]) != bool(playlist.isTrackMuted(t)):
+        playlist.muteTrack(t)
+    return _playlist_track(t)
+
+
+def _h_pattern_set(p):
+    """Rename / recolour a pattern (1-based)."""
+    pat = int(p.get("pattern") or patterns.patternNumber())
+    if pat < 1 or pat > patterns.patternCount():
+        raise _ClientError("pattern %d out of range (1-%d)" % (pat, patterns.patternCount()),
+                           code="bad_param")
+    if p.get("name") is not None:
+        patterns.setPatternName(pat, str(p["name"]))
+    if p.get("color") is not None or p.get("r") is not None:
+        patterns.setPatternColor(pat, _resolve_color(p))
+    if p.get("length_beats") is not None:
+        patterns.setPatternLength(pat, int(p["length_beats"]))
+    if p.get("select"):
+        patterns.jumpToPattern(pat)
+    return {"pattern": pat, "name": patterns.getPatternName(pat),
+            "selected": patterns.patternNumber(),
+            "color": _color_out(patterns.getPatternColor(pat)),
+            "length_beats": patterns.getPatternLength(pat)}
+
+
+def _slot_info(track, s):
+    info = {"slot": s, "name": plugins.getPluginName(track, s)}
+    for key, fn in (("mix", lambda: mixer.getPluginMixLevel(track, s)),
+                    ("muted", lambda: bool(mixer.getPluginMuteState(track, s)))):
+        try:
+            info[key] = fn()
+        except Exception as e:
+            info[key + "_error"] = str(e)
+    return info
+
+
+def _h_mixer_slots(p):
+    """Effect slots on a mixer track: plugin name, mix level, mute."""
+    track = int(p["track"])
+    slots = []
+    for s in range(10):
+        try:
+            if plugins.isValid(track, s):
+                slots.append(_slot_info(track, s))
+        except Exception:
+            pass
+    out = {"track": track, "name": mixer.getTrackName(track), "slots": slots}
+    try:
+        out["slots_enabled"] = bool(mixer.isTrackSlotsEnabled(track))
+    except Exception as e:
+        out["slots_enabled_error"] = str(e)
+    return out
+
+
+def _h_mixer_set_slot(p):
+    """Set one slot's mix level (0..1) / mute, or all slots on/off."""
+    track = int(p["track"])
+    if p.get("slots_enabled") is not None:
+        mixer.enableTrackSlots(track, bool(p["slots_enabled"]))
+    if p.get("slot") is not None:
+        s = int(p["slot"])
+        if not plugins.isValid(track, s):
+            raise _ClientError("no plugin at track %d slot %d" % (track, s), code="bad_param")
+        if p.get("mix") is not None:
+            mixer.setPluginMixLevel(track, s, float(p["mix"]))
+        if p.get("mute") is not None:
+            mixer.setPluginMuteState(track, s, bool(p["mute"]))
+    return _h_mixer_slots({"track": track})
 
 
 def _h_arrange_add_marker(p):
@@ -1259,5 +1410,12 @@ _HANDLERS = {
     "pattern_set_length": _h_pattern_set_length,
     "project_info": _h_project_info,
     "project_save": _h_project_save,
+    "undo": _h_undo,
+    "channel_props": _h_channel_props,
+    "playlist_tracks": _h_playlist_tracks,
+    "playlist_set_track": _h_playlist_set_track,
+    "pattern_set": _h_pattern_set,
+    "mixer_slots": _h_mixer_slots,
+    "mixer_set_slot": _h_mixer_set_slot,
     "pattern_list": _h_pattern_list,
 }

@@ -23,6 +23,25 @@ class Step(BaseModel):
     step: int = Field(ge=0, description="1/16-note step index from the pattern start (16 per bar).")
     velocity: Optional[float] = Field(None, ge=0.0, le=1.0, description="0..1; omit for the channel default.")
     pitch: Optional[int] = Field(None, ge=0, le=127, description="MIDI key; omit for the channel default.")
+    pan: Optional[float] = Field(None, ge=0.0, le=1.0, description="0 = left, 0.5 = centre, 1 = right.")
+    shift: Optional[int] = Field(None, ge=0, description="Delay in ticks (swing/humanise); omit for none.")
+
+
+def write_steps(bridge, channel: int, steps: List[Step], clear: bool = True,
+                pattern: Optional[int] = None) -> dict:
+    """Chunked steps_write + merged readback result (shared with fl_write_section)."""
+    rows = [[s.step, s.velocity, s.pitch, s.pan, s.shift] for s in steps]
+    results = []
+    for i in range(0, max(len(rows), 1), _CHUNK):
+        results.append(bridge.call(protocol.CMD_STEPS_WRITE, {
+            "channel": channel, "steps": rows[i:i + _CHUNK],
+            "clear": clear and i == 0, "pattern": pattern if i == 0 else None,
+        }, timeout=10.0))
+    missing = [m for r in results for m in r.get("missing", [])]
+    first = results[0]
+    return {"ok": not missing, "channel": channel, "name": first.get("name"),
+            "pattern": first.get("pattern"), "pattern_name": first.get("pattern_name"),
+            "written": sum(r.get("written", 0) for r in results), "missing": missing}
 
 
 def register(mcp: FastMCP) -> None:
@@ -42,19 +61,7 @@ def register(mcp: FastMCP) -> None:
         length extend it only if the pattern is long enough; set the length
         first with fl_set_pattern_length (e.g. 32 beats = 8 bars = 128 steps).
         Result `ok` is false if any step failed to read back as set."""
-        bridge = get_bridge()
-        rows = [[s.step, s.velocity, s.pitch] for s in steps]
-        results = []
-        for i in range(0, max(len(rows), 1), _CHUNK):
-            results.append(bridge.call(protocol.CMD_STEPS_WRITE, {
-                "channel": channel, "steps": rows[i:i + _CHUNK],
-                "clear": clear and i == 0, "pattern": pattern if i == 0 else None,
-            }, timeout=10.0))
-        missing = [m for r in results for m in r.get("missing", [])]
-        first = results[0]
-        return {"ok": not missing, "channel": channel, "name": first.get("name"),
-                "pattern": first.get("pattern"), "pattern_name": first.get("pattern_name"),
-                "written": sum(r.get("written", 0) for r in results), "missing": missing}
+        return write_steps(get_bridge(), channel, steps, clear, pattern)
 
     @mcp.tool(annotations={"title": "Read a channel's step-sequencer steps",
                            "readOnlyHint": True, "destructiveHint": False,
