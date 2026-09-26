@@ -1019,16 +1019,163 @@ def _h_ensure_piano_roll(p):
     return out
 
 
-def _h_channel_select(p):
-    """Make one channel the active selection. The Piano roll follows the
-    selected channel, so this retargets the note bridge to write into it."""
+def _pianoroll_status():
+    """What the Piano roll is showing right now. The caption ("Piano roll -
+    <channel>") is the only API-visible proof of which channel the note bridge
+    will write into -- channel-rack selection alone does NOT retarget it."""
+    wid = getattr(midi, "widPianoRoll", None)
+    out = {"visible": None, "caption": None}
+    try:
+        out["visible"] = bool(ui.getVisible(wid))
+    except Exception as e:
+        out["visible_error"] = str(e)
+    try:
+        ui.setFocused(wid)
+        out["caption"] = ui.getFocusedFormCaption()
+    except Exception as e:
+        out["caption_error"] = str(e)
+    try:
+        sel = channels.selectedChannel()
+        out["selected_channel"] = sel
+        out["selected_name"] = channels.getChannelName(sel)
+    except Exception as e:
+        out["selected_error"] = str(e)
+    try:
+        pn = patterns.patternNumber()
+        out["pattern"] = pn
+        out["pattern_name"] = patterns.getPatternName(pn)
+    except Exception as e:
+        out["pattern_error"] = str(e)
+    return out
+
+
+def _caption_matches(caption, name):
+    return bool(caption) and bool(name) and caption.rstrip().endswith(name)
+
+
+def _h_pianoroll_status(p):
+    return _pianoroll_status()
+
+
+def _h_pianoroll_target(p):
+    """Select a channel AND reopen the Piano roll on it, then report the
+    caption so the caller can verify before writing. Strategies are tried in
+    order until the caption names the channel."""
     idx = int(p["channel"])
+    if idx < 0 or idx >= channels.channelCount():
+        return {"ok": False, "error": "channel %d out of range (0-%d)"
+                % (idx, channels.channelCount() - 1)}
+    name = channels.getChannelName(idx)
+    wid = getattr(midi, "widPianoRoll", None)
     try:
         channels.selectOneChannel(idx)
     except Exception as e:
         return {"ok": False, "error": "selectOneChannel: %s" % e}
-    return {"ok": True, "channel": idx, "name": channels.getChannelName(idx),
-            "selected": channels.channelNumber()}
+
+    def reopen():
+        ui.hideWindow(wid)
+        ui.showWindow(wid)
+
+    def focus_editor():
+        reopen()
+        channels.focusEditor(idx)
+
+    attempts = []
+    for label, fn in (("reopen", reopen), ("focusEditor", focus_editor)):
+        try:
+            fn()
+        except Exception as e:
+            attempts.append({"method": label, "error": str(e)})
+            continue
+        st = _pianoroll_status()
+        attempts.append({"method": label, "caption": st.get("caption")})
+        if _caption_matches(st.get("caption"), name):
+            return {"ok": True, "channel": idx, "name": name, "method": label,
+                    "status": st, "attempts": attempts}
+    return {"ok": False, "channel": idx, "name": name, "status": _pianoroll_status(),
+            "attempts": attempts,
+            "error": "Piano roll did not switch to channel %d (%s)" % (idx, name)}
+
+
+def _h_channel_select(p):
+    """Select a channel and retarget the Piano roll to it (see
+    _h_pianoroll_target) -- selection alone leaves the Piano roll where it was."""
+    return _h_pianoroll_target(p)
+
+
+# -- Step sequencer: channel-addressed note writes (no Piano roll) -----------
+
+def _check_channel(idx):
+    n = channels.channelCount()
+    if idx < 0 or idx >= n:
+        raise _ClientError("channel %d out of range (0-%d)" % (idx, n - 1), code="bad_param")
+
+
+def _pattern_steps(pat):
+    """Pattern length in 16th steps (getPatternLength is in beats)."""
+    try:
+        return max(16, int(round(patterns.getPatternLength(pat) * 4)))
+    except Exception:
+        return 16
+
+
+def _active_steps(idx, total):
+    return [s for s in range(total) if channels.getGridBit(idx, s)]
+
+
+def _h_steps_write(p):
+    """Set step-sequencer steps on one channel of the current (or given)
+    pattern, then read the grid back. p: channel, steps [[step, vel0-1|null,
+    pitch|null], ...], clear (bool), pattern (1-based, optional)."""
+    idx = int(p["channel"])
+    _check_channel(idx)
+    if p.get("pattern"):
+        patterns.jumpToPattern(int(p["pattern"]))
+    pat = patterns.patternNumber()
+    steps = p.get("steps") or []
+    total = max([_pattern_steps(pat)] + [int(s[0]) + 1 for s in steps])
+    if p.get("clear"):
+        for s in range(total):
+            if channels.getGridBit(idx, s):
+                channels.setGridBit(idx, s, 0)
+    for entry in steps:
+        s = int(entry[0])
+        channels.setGridBit(idx, s, 1)
+        vel = entry[1] if len(entry) > 1 else None
+        pitch = entry[2] if len(entry) > 2 else None
+        if vel is not None:
+            channels.setStepParameterByIndex(idx, pat, s, midi.pVelocity,
+                                             int(round(float(vel) * 127)))
+        if pitch is not None:
+            channels.setStepParameterByIndex(idx, pat, s, midi.pPitch, int(pitch))
+    want = set(int(s[0]) for s in steps)
+    missing = [s for s in sorted(want) if not channels.getGridBit(idx, s)]
+    return {"ok": not missing, "channel": idx, "name": channels.getChannelName(idx),
+            "pattern": pat, "pattern_name": patterns.getPatternName(pat),
+            "written": len(want), "missing": missing[:16]}
+
+
+def _h_steps_read(p):
+    """Active steps for one channel in the current (or given) pattern."""
+    idx = int(p["channel"])
+    _check_channel(idx)
+    if p.get("pattern"):
+        patterns.jumpToPattern(int(p["pattern"]))
+    pat = patterns.patternNumber()
+    total = int(p.get("max_steps") or _pattern_steps(pat))
+    act = _active_steps(idx, total)
+    start = int(p.get("start", 0))
+    page = act[start:start + 120]
+    return {"channel": idx, "name": channels.getChannelName(idx), "pattern": pat,
+            "scanned_steps": total, "count": len(act), "start": start,
+            "steps": page, "next_start": start + 120 if start + 120 < len(act) else None}
+
+
+def _h_pattern_set_length(p):
+    """Set a pattern's length in beats (default: current pattern)."""
+    pat = int(p.get("pattern") or patterns.patternNumber())
+    patterns.setPatternLength(pat, int(p["beats"]))
+    return {"pattern": pat, "length_beats": patterns.getPatternLength(pat)}
 
 
 def _h_arrange_add_marker(p):
@@ -1099,5 +1246,10 @@ _HANDLERS = {
     "arrange_add_marker": _h_arrange_add_marker,
     "channel_select": _h_channel_select,
     "ensure_piano_roll": _h_ensure_piano_roll,
+    "pianoroll_status": _h_pianoroll_status,
+    "pianoroll_target": _h_pianoroll_target,
+    "steps_write": _h_steps_write,
+    "steps_read": _h_steps_read,
+    "pattern_set_length": _h_pattern_set_length,
     "pattern_list": _h_pattern_list,
 }

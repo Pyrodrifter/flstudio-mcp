@@ -154,6 +154,11 @@ CMD_ARRANGE_ADD_MARKER = "arrange_add_marker"          # addAutoTimeMarker at a 
 
 # Note-bridge hardening -- ensure the Piano roll is open before a note-write
 CMD_ENSURE_PIANO_ROLL = "ensure_piano_roll"            # ui.showWindow(widPianoRoll)
+CMD_PIANOROLL_STATUS = "pianoroll_status"              # caption/pattern/selection readback
+CMD_PIANOROLL_TARGET = "pianoroll_target"              # select channel + reopen Piano roll on it
+CMD_STEPS_WRITE = "steps_write"                        # setGridBit + step params, readback
+CMD_STEPS_READ = "steps_read"                          # getGridBit scan (paged)
+CMD_PATTERN_SET_LENGTH = "pattern_set_length"          # patterns.setPatternLength (beats)
 
 
 # ---------------------------------------------------------------------------

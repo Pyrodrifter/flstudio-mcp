@@ -15,7 +15,6 @@ from typing import Annotated, List, Optional
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
-from .. import protocol
 from ..connection import get_bridge
 
 
@@ -27,14 +26,7 @@ class RagaNote(BaseModel):
 
 
 def _write(notes, channel, mode):
-    bridge = get_bridge()
-    sel = None
-    if channel is not None:
-        sel = bridge.call(protocol.CMD_CHANNEL_SELECT, {"channel": channel})
-    res = bridge.apply_notes([n.model_dump() for n in notes], mode)
-    if isinstance(res, dict) and sel is not None:
-        res["channel_selected"] = sel
-    return res
+    return get_bridge().apply_notes([n.model_dump() for n in notes], mode, channel=channel)
 
 
 def register(mcp: FastMCP) -> None:

@@ -35,9 +35,9 @@ def register(mcp: FastMCP) -> None:
     def fl_arrange_select_channel(
         channel: Annotated[int, Field(ge=0, description="Channel-rack channel index.")],
     ) -> dict:
-        """Make a channel the active selection so the note bridge
-        (fl_write_piano_roll_notes) writes INTO it. Use before writing each
-        instrument's notes in a section (drums -> ch X, bass -> ch Y, ...)."""
+        """Select a channel and reopen the Piano roll on it. Returns ok=false
+        if the Piano roll caption doesn't confirm the switch. Prefer passing
+        `channel` to fl_write_piano_roll_notes, which does this + verifies."""
         return get_bridge().call(protocol.CMD_CHANNEL_SELECT, {"channel": channel})
 
     @mcp.tool(annotations={"title": "Clone a pattern (copies notes)", **_WR})

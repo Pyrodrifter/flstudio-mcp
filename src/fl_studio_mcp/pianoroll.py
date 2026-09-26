@@ -17,7 +17,60 @@ Scripting menu so it becomes FL's "last script".
 
 from __future__ import annotations
 
+import time
+
+from . import protocol
 from .pyscript_gen import write_apply_script, write_quantize_script
+
+
+def prepare_target(call, channel=None):
+    """Open the Piano roll -- retargeted to ``channel`` when given -- and read
+    back which channel it is actually showing. ``call(cmd, params, timeout=)``
+    talks to the FL controller. Returns (ok, info); ok is False when a channel
+    was requested but the Piano roll caption does not name it, in which case
+    nothing must be written (it would land on the wrong instrument)."""
+    info = {}
+    try:
+        if channel is None:
+            info["piano_roll_ensured"] = call(protocol.CMD_ENSURE_PIANO_ROLL, {}, timeout=5.0)
+        else:
+            tgt = call(protocol.CMD_PIANOROLL_TARGET, {"channel": int(channel)}, timeout=5.0)
+            info["expected_channel"] = int(channel)
+            info["expected_name"] = tgt.get("name")
+            info["attempts"] = tgt.get("attempts")
+            if tgt.get("error") and not tgt.get("name"):
+                info["error"] = tgt["error"]
+                return False, info
+        time.sleep(0.25)                     # let FL repaint before reading the caption
+        status = call(protocol.CMD_PIANOROLL_STATUS, {}, timeout=5.0)
+        info["piano_roll"] = status
+    except Exception as e:
+        info["error"] = "%s: %s" % (type(e).__name__, e)
+        return channel is None, info
+    if channel is None:
+        return True, info
+    caption = (status or {}).get("caption") or ""
+    name = info.get("expected_name") or ""
+    if name and caption.rstrip().endswith(name):
+        return True, info
+    info["error"] = ("Piano roll shows %r, expected channel %s (%r) -- not writing."
+                     % (caption, channel, name))
+    return False, info
+
+
+def targeted_apply(call, notes, mode="replace", trigger=True, quantize=None,
+                   snap_ends=False, channel=None):
+    """prepare_target + apply_notes: refuse to write when the target can't be
+    verified, and attach the Piano roll readback to every result."""
+    info = {}
+    if trigger:
+        ok, info = prepare_target(call, channel)
+        if not ok:
+            return {"ok": False, "triggered": False, **info}
+    res = apply_notes(notes, mode, trigger=trigger, quantize=quantize, snap_ends=snap_ends)
+    if isinstance(res, dict):
+        res.update(info)
+    return res
 
 
 def apply_notes(notes, mode="replace", trigger=True, quantize=None, snap_ends=False):

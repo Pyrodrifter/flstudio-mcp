@@ -44,7 +44,6 @@ import socketserver
 import threading
 
 from . import __version__
-from . import protocol
 from .connection import (
     FLBridge,
     FLBridgeError,
@@ -116,19 +115,12 @@ def _handle_request(req: dict) -> dict:
         # shortcut. Runs here (normal process) so it works even when the MCP
         # server is MSIX-sandboxed.
         try:
-            trigger = req.get("trigger", True)
-            ensured = None
-            if trigger:                       # auto-open the piano roll first
-                try:
-                    ensured = _get_bridge().call(protocol.CMD_ENSURE_PIANO_ROLL, {}, timeout=5.0)
-                except Exception as e:
-                    ensured = {"ok": False, "error": "%s: %s" % (type(e).__name__, e)}
-            from .pianoroll import apply_notes
-            res = apply_notes(req.get("notes") or [], req.get("mode", "replace"), trigger=trigger,
-                              quantize=req.get("quantize"), snap_ends=req.get("snap_ends", False))
-            if isinstance(res, dict):
-                res["piano_roll_ensured"] = ensured
-            return res
+            from .pianoroll import targeted_apply
+            return targeted_apply(_get_bridge().call, req.get("notes") or [],
+                                  req.get("mode", "replace"), trigger=req.get("trigger", True),
+                                  quantize=req.get("quantize"),
+                                  snap_ends=req.get("snap_ends", False),
+                                  channel=req.get("channel"))
         except Exception as e:
             return {"ok": False, "exc": "Error",
                     "error": "%s: %s" % (type(e).__name__, e)}
