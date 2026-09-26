@@ -154,6 +154,21 @@ CMD_ARRANGE_ADD_MARKER = "arrange_add_marker"          # addAutoTimeMarker at a 
 
 # Note-bridge hardening -- ensure the Piano roll is open before a note-write
 CMD_ENSURE_PIANO_ROLL = "ensure_piano_roll"            # ui.showWindow(widPianoRoll)
+CMD_PIANOROLL_STATUS = "pianoroll_status"              # caption/pattern/selection readback
+CMD_PIANOROLL_TARGET = "pianoroll_target"              # select channel + reopen Piano roll on it
+CMD_STEPS_WRITE = "steps_write"                        # setGridBit + step params, readback
+CMD_STEPS_READ = "steps_read"                          # getGridBit scan (paged)
+CMD_PATTERN_SET_LENGTH = "pattern_set_length"          # patterns.setPatternLength (beats)
+CMD_PROJECT_INFO = "project_info"                      # window title (project name)
+CMD_PROJECT_SAVE = "project_save"                      # FPT_Save; refused if untitled
+CMD_UNDO = "undo"                                      # general.undoUp / undoDown
+CMD_CHANNEL_PROPS = "channel_props"                    # pitch (cents) read+set
+CMD_SWING = "swing"                                    # project-wide swing read+set
+CMD_PLAYLIST_TRACKS = "playlist_tracks"                # names/colours/mute (paged)
+CMD_PLAYLIST_SET_TRACK = "playlist_set_track"          # name/colour/mute one track
+CMD_PATTERN_SET = "pattern_set"                        # name/colour/length/select
+CMD_MIXER_SLOTS = "mixer_slots"                        # effect slots: name/mix/mute
+CMD_MIXER_SET_SLOT = "mixer_set_slot"                  # slot mix/mute, all slots on/off
 
 
 # ---------------------------------------------------------------------------

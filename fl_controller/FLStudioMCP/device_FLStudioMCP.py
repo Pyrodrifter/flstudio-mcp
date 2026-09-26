@@ -80,6 +80,7 @@ REQUEST_ID_LEN = 8
 _HEADER_LEN = 1 + 3 + 1 + REQUEST_ID_LEN
 
 HEARTBEAT_INTERVAL = 0.5  # seconds between heartbeats
+MAX_SYSEX_OUT = 1000      # FL silently drops outgoing SysEx above ~1 KB
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +249,15 @@ def _send_message(direction, request_id, payload):
         return
     body = _encode_message(direction, request_id, payload)
     framed = bytes([0xF0]) + body + bytes([0xF7])
+    if direction == DIR_RESPONSE and len(framed) > MAX_SYSEX_OUT:
+        # FL drops outgoing SysEx above ~1 KB without an error (8 playlist
+        # tracks timed out, 6 worked), so the server would just time out.
+        # Send a small, explicit error instead.
+        body = _encode_message(direction, request_id, {
+            "v": PROTOCOL_VERSION, "ok": False, "code": "too_large",
+            "error": "response too large (%d bytes, FL limit ~%d): request fewer items"
+                     % (len(framed), MAX_SYSEX_OUT)})
+        framed = bytes([0xF0]) + body + bytes([0xF7])
     try:
         _send_sysex_fn(framed)
     except Exception as e:
@@ -290,7 +300,7 @@ def _h_ping(params):
     return {
         "fl_version": _fl_version,
         "protocol_version": PROTOCOL_VERSION,
-        "build": "color-v14",   # reload marker -- bump to verify reloads take
+        "build": "exec-v1",   # reload marker -- bump to verify reloads take
         "ts": time.time(),
     }
 
@@ -1019,16 +1029,362 @@ def _h_ensure_piano_roll(p):
     return out
 
 
-def _h_channel_select(p):
-    """Make one channel the active selection. The Piano roll follows the
-    selected channel, so this retargets the note bridge to write into it."""
+def _pianoroll_status():
+    """What the Piano roll is showing right now. The caption ("Piano roll -
+    <channel>") is the only API-visible proof of which channel the note bridge
+    will write into -- channel-rack selection alone does NOT retarget it."""
+    wid = getattr(midi, "widPianoRoll", None)
+    out = {"visible": None, "caption": None}
+    try:
+        out["visible"] = bool(ui.getVisible(wid))
+    except Exception as e:
+        out["visible_error"] = str(e)
+    try:
+        ui.setFocused(wid)
+        out["caption"] = ui.getFocusedFormCaption()
+    except Exception as e:
+        out["caption_error"] = str(e)
+    try:
+        sel = channels.selectedChannel()
+        out["selected_channel"] = sel
+        out["selected_name"] = channels.getChannelName(sel)
+    except Exception as e:
+        out["selected_error"] = str(e)
+    try:
+        pn = patterns.patternNumber()
+        out["pattern"] = pn
+        out["pattern_name"] = patterns.getPatternName(pn)
+    except Exception as e:
+        out["pattern_error"] = str(e)
+    return out
+
+
+def _h_pianoroll_status(p):
+    return _pianoroll_status()
+
+
+def _h_pianoroll_target(p):
+    """Select exactly one channel and reopen the Piano roll so it shows it.
+    The Piano roll follows the selected channel (verified against the saved
+    .flp); its caption carries no channel name, so success is judged by the
+    selection readback. The server verifies the written notes afterwards."""
     idx = int(p["channel"])
+    if idx < 0 or idx >= channels.channelCount():
+        return {"ok": False, "error": "channel %d out of range (0-%d)"
+                % (idx, channels.channelCount() - 1)}
+    name = channels.getChannelName(idx)
+    wid = getattr(midi, "widPianoRoll", None)
     try:
         channels.selectOneChannel(idx)
+        ui.hideWindow(wid)
+        ui.showWindow(wid)
     except Exception as e:
-        return {"ok": False, "error": "selectOneChannel: %s" % e}
-    return {"ok": True, "channel": idx, "name": channels.getChannelName(idx),
-            "selected": channels.channelNumber()}
+        return {"ok": False, "channel": idx, "name": name, "error": "%s" % e}
+    st = _pianoroll_status()
+    ok = st.get("selected_channel") == idx
+    out = {"ok": ok, "channel": idx, "name": name, "status": st}
+    if not ok:
+        out["error"] = "selection is %r, not channel %d (%s)" % (
+            st.get("selected_name"), idx, name)
+    return out
+
+
+def _h_channel_select(p):
+    """Select a channel and retarget the Piano roll to it (see
+    _h_pianoroll_target) -- selection alone leaves the Piano roll where it was."""
+    return _h_pianoroll_target(p)
+
+
+# -- Step sequencer: channel-addressed note writes (no Piano roll) -----------
+
+def _check_channel(idx):
+    n = channels.channelCount()
+    if idx < 0 or idx >= n:
+        raise _ClientError("channel %d out of range (0-%d)" % (idx, n - 1), code="bad_param")
+
+
+def _pattern_steps(pat):
+    """Pattern length in 16th steps. getPatternLength/setPatternLength count
+    16th STEPS on FL 26.1 (8-bar patterns report 128; setting 32 made the
+    Drums pattern 2 bars), despite the API docs saying beats."""
+    try:
+        return max(16, int(patterns.getPatternLength(pat)))
+    except Exception:
+        return 16
+
+
+def _active_steps(idx, total):
+    return [s for s in range(total) if channels.getGridBit(idx, s)]
+
+
+def _save_undo(name, flag_name):
+    """Create an FL undo point before an API edit. Step, playlist, pattern
+    and mixer edits made through the API don't add undo history on their own
+    (verified on FL 26.1), so without this fl_undo would revert the edit
+    BEFORE ours -- possibly the user's."""
+    try:
+        general.saveUndo(name, getattr(midi, flag_name, 0))
+    except Exception:
+        pass
+
+
+def _h_steps_write(p):
+    """Set step-sequencer steps on one channel of the current (or given)
+    pattern, then read the grid back. p: channel, steps [[step, vel0-1|null,
+    pitch|null], ...], clear (bool), pattern (1-based, optional)."""
+    idx = int(p["channel"])
+    _check_channel(idx)
+    if p.get("pattern"):
+        patterns.jumpToPattern(int(p["pattern"]))
+    pat = patterns.patternNumber()
+    if p.get("undo_point", True):       # the server sends it on the first chunk only
+        _save_undo("MCP: steps on %s" % channels.getChannelName(idx), "UF_SS")
+    steps = p.get("steps") or []
+    total = max([_pattern_steps(pat)] + [int(s[0]) + 1 for s in steps])
+    if p.get("clear"):
+        for s in range(total):
+            if channels.getGridBit(idx, s):
+                channels.setGridBit(idx, s, 0)
+    for entry in steps:
+        s = int(entry[0])
+        channels.setGridBit(idx, s, 1)
+        vel = entry[1] if len(entry) > 1 else None
+        pitch = entry[2] if len(entry) > 2 else None
+        if vel is not None:
+            channels.setStepParameterByIndex(idx, pat, s, midi.pVelocity,
+                                             int(round(float(vel) * 127)))
+        if pitch is not None:
+            channels.setStepParameterByIndex(idx, pat, s, midi.pPitch, int(pitch))
+        pan = entry[3] if len(entry) > 3 else None       # 0..1, 0.5 = centre
+        if pan is not None:
+            channels.setStepParameterByIndex(idx, pat, s, midi.pPan,
+                                             int(round(float(pan) * 128)))
+        shift = entry[4] if len(entry) > 4 else None     # delay in ticks
+        if shift is not None:
+            # FL 26 treats pShift as the note's ABSOLUTE tick position in the
+            # pattern (shift=6 on step 12 moved it to tick 6; 12*24+6 landed at
+            # tick 294), so convert the caller's per-step offset.
+            per_step = int(round(general.getRecPPQ() / 4.0))
+            channels.setStepParameterByIndex(idx, pat, s, midi.pShift,
+                                             s * per_step + int(shift))
+    want = set(int(s[0]) for s in steps)
+    missing = [s for s in sorted(want) if not channels.getGridBit(idx, s)]
+    return {"ok": not missing, "channel": idx, "name": channels.getChannelName(idx),
+            "pattern": pat, "pattern_name": patterns.getPatternName(pat),
+            "written": len(want), "missing": missing[:16]}
+
+
+def _h_steps_read(p):
+    """Active steps for one channel in the current (or given) pattern."""
+    idx = int(p["channel"])
+    _check_channel(idx)
+    if p.get("pattern"):
+        patterns.jumpToPattern(int(p["pattern"]))
+    pat = patterns.patternNumber()
+    total = int(p.get("max_steps") or _pattern_steps(pat))
+    act = _active_steps(idx, total)
+    start = int(p.get("start", 0))
+    page = act[start:start + 120]
+    return {"channel": idx, "name": channels.getChannelName(idx), "pattern": pat,
+            "scanned_steps": total, "count": len(act), "start": start,
+            "steps": page, "next_start": start + 120 if start + 120 < len(act) else None}
+
+
+def _h_pattern_set_length(p):
+    """Set a pattern's length in beats (default: current pattern)."""
+    pat = int(p.get("pattern") or patterns.patternNumber())
+    _save_undo("MCP: pattern %d length" % pat, "UF_None")
+    patterns.setPatternLength(pat, int(p["beats"]) * 4)       # API counts 16th steps
+    return {"pattern": pat, "length_beats": patterns.getPatternLength(pat) / 4.0}
+
+
+def _project_title():
+    try:
+        return ui.getProgTitle()
+    except Exception:
+        return None
+
+
+def _h_project_info(p):
+    """Window title (carries the project name; 'untitled' if never saved)."""
+    return {"title": _project_title()}
+
+
+def _h_project_save(p):
+    """Ctrl+S equivalent so the .flp on disk is current (the MCP reads it for
+    note/sample/playlist readback). Refused for never-saved projects, where
+    FL would pop a Save-As dialog and block the controller."""
+    title = _project_title() or ""
+    if "untitled" in title.lower():
+        return {"ok": False, "title": title,
+                "error": "Project has never been saved -- save it once in FL (Ctrl+S) first."}
+    transport.globalTransport(midi.FPT_Save, 1)
+    return {"ok": True, "title": title}
+
+
+# -- Phase 3: undo, channel props, playlist tracks, patterns, mixer slots ----
+
+def _undo_state():
+    out = {}
+    for key, fn in (("pos", general.getUndoHistoryPos),
+                    ("count", general.getUndoHistoryCount),
+                    ("hint", general.getUndoLevelHint)):
+        try:
+            out[key] = fn()
+        except Exception as e:
+            out[key + "_error"] = str(e)
+    return out
+
+
+def _h_undo(p):
+    """Step FL's undo history: undo `steps` times, or redo when redo=true.
+    Acts on FL's own history, so it also undoes edits made by hand."""
+    steps = max(0, min(50, int(p.get("steps", 1))))
+    if steps == 0:                       # report only: what would be undone
+        return {"steps": 0, "state": _undo_state()}
+    before = _undo_state()
+    fn = general.undoDown if p.get("redo") else general.undoUp
+    for _ in range(steps):
+        fn()
+    return {"redo": bool(p.get("redo")), "steps": steps, "before": before,
+            "after": _undo_state()}
+
+
+def _channel_props(idx):
+    out = {"channel": idx, "name": channels.getChannelName(idx)}
+    try:
+        out["pitch_cents"] = channels.getChannelPitch(idx, 1)
+    except Exception as e:
+        out["pitch_error"] = str(e)
+    return out
+
+
+def _h_swing(p):
+    """Project-wide swing (FL 26: channels.getSwing() takes no channel)."""
+    if p.get("value") is not None:
+        _save_undo("MCP: swing", "UF_None")
+        channels.setSwing(int(p["value"]))
+    return {"swing": channels.getSwing()}
+
+
+def _h_channel_props(p):
+    """Read, and optionally set, a channel's pitch (cents)."""
+    idx = int(p["channel"])
+    _check_channel(idx)
+    if p.get("pitch_cents") is not None:
+        _save_undo("MCP: pitch %s" % channels.getChannelName(idx), "UF_None")
+        channels.setChannelPitch(idx, float(p["pitch_cents"]), 1)
+    return _channel_props(idx)
+
+
+def _playlist_track(t):
+    return {"track": t, "name": playlist.getTrackName(t),
+            "color": _color_out(playlist.getTrackColor(t)),
+            "muted": bool(playlist.isTrackMuted(t)), "solo": bool(playlist.isTrackSolo(t))}
+
+
+def _h_playlist_tracks(p):
+    """Playlist tracks (1-based): name, colour hex, mute, solo. Budget-paged
+    (next_start) to stay under FL's ~1 KB SysEx reply limit."""
+    total = playlist.trackCount()
+    start = max(1, int(p.get("start", 1)))
+    count = max(1, min(25, int(p.get("count", 10))))
+    rows, t = [], start
+    while t <= min(total, start + count - 1):
+        rows.append({"track": t, "name": playlist.getTrackName(t),
+                     "color": _color_out(playlist.getTrackColor(t))["hex"],
+                     "muted": bool(playlist.isTrackMuted(t)), "solo": bool(playlist.isTrackSolo(t))})
+        if len(json.dumps(rows, separators=(",", ":"))) > 520 and len(rows) > 1:
+            rows.pop()
+            break
+        t += 1
+    return {"total": total, "tracks": rows,
+            "next_start": t if t <= min(total, start + count - 1) else None}
+
+
+def _h_playlist_set_track(p):
+    t = int(p["track"])
+    if t < 1 or t > playlist.trackCount():
+        raise _ClientError("track %d out of range (1-%d)" % (t, playlist.trackCount()),
+                           code="bad_param")
+    _save_undo("MCP: playlist track %d" % t, "UF_PL")
+    if p.get("name") is not None:
+        playlist.setTrackName(t, str(p["name"]))
+    if p.get("color") is not None or p.get("r") is not None:
+        playlist.setTrackColor(t, _resolve_color(p))
+    if p.get("mute") is not None and bool(p["mute"]) != bool(playlist.isTrackMuted(t)):
+        playlist.muteTrack(t)
+    return _playlist_track(t)
+
+
+def _h_pattern_set(p):
+    """Rename / recolour a pattern (1-based)."""
+    pat = int(p.get("pattern") or patterns.patternNumber())
+    if pat < 1 or pat > patterns.patternCount():
+        raise _ClientError("pattern %d out of range (1-%d)" % (pat, patterns.patternCount()),
+                           code="bad_param")
+    if any(p.get(k) is not None for k in ("name", "color", "r", "length_beats")):
+        _save_undo("MCP: pattern %d" % pat, "UF_None")
+    if p.get("name") is not None:
+        patterns.setPatternName(pat, str(p["name"]))
+    if p.get("color") is not None or p.get("r") is not None:
+        patterns.setPatternColor(pat, _resolve_color(p))
+    if p.get("length_beats") is not None:
+        patterns.setPatternLength(pat, int(p["length_beats"]) * 4)   # API counts 16th steps
+    if p.get("select"):
+        patterns.jumpToPattern(pat)
+    return {"pattern": pat, "name": patterns.getPatternName(pat),
+            "selected": patterns.patternNumber(),
+            "color": _color_out(patterns.getPatternColor(pat)),
+            "length_beats": patterns.getPatternLength(pat) / 4.0}
+
+
+def _slot_info(track, s):
+    info = {"slot": s, "name": plugins.getPluginName(track, s)}
+    for key, fn in (("mix", lambda: mixer.getPluginMixLevel(track, s)),
+                    # getPluginMuteState returns ENABLED on FL 26.1 (Maximus on ->
+                    # True, Emphasizer off -> False, checked against the UI).
+                    ("muted", lambda: not mixer.getPluginMuteState(track, s))):
+        try:
+            info[key] = fn()
+        except Exception as e:
+            info[key + "_error"] = str(e)
+    return info
+
+
+def _h_mixer_slots(p):
+    """Effect slots on a mixer track: plugin name, mix level, mute."""
+    track = int(p["track"])
+    slots = []
+    for s in range(10):
+        try:
+            if plugins.isValid(track, s):
+                slots.append(_slot_info(track, s))
+        except Exception:
+            pass
+    out = {"track": track, "name": mixer.getTrackName(track), "slots": slots}
+    try:
+        out["slots_enabled"] = bool(mixer.isTrackSlotsEnabled(track))
+    except Exception as e:
+        out["slots_enabled_error"] = str(e)
+    return out
+
+
+def _h_mixer_set_slot(p):
+    """Set one slot's mix level (0..1) / mute, or all slots on/off."""
+    track = int(p["track"])
+    _save_undo("MCP: mixer track %d slots" % track, "UF_Plugin")
+    if p.get("slots_enabled") is not None:
+        mixer.enableTrackSlots(track, bool(p["slots_enabled"]))
+    if p.get("slot") is not None:
+        s = int(p["slot"])
+        if not plugins.isValid(track, s):
+            raise _ClientError("no plugin at track %d slot %d" % (track, s), code="bad_param")
+        if p.get("mix") is not None:
+            mixer.setPluginMixLevel(track, s, float(p["mix"]))
+        if p.get("mute") is not None:
+            mixer.setPluginMuteState(track, s, not bool(p["mute"]))   # API value = enabled
+    return _h_mixer_slots({"track": track})
 
 
 def _h_arrange_add_marker(p):
@@ -1054,7 +1410,63 @@ def _h_arrange_add_marker(p):
         return {"ok": False, "error": "addAutoTimeMarker: %s" % e}
 
 
+# -- exec: run Python inside FL (full API access) ----------------------------
+# The server may split long code across several requests (append=True); the
+# last one (run=True) executes it in a namespace that persists between calls,
+# so helpers defined once stay available. Whatever the code assigns to
+# `result` is JSON-encoded and handed back in <=600-byte pages (exec_fetch).
+
+_EXEC_NS = {}
+_EXEC_CODE = []
+_EXEC_OUT = ""
+_EXEC_PAGE = 250
+
+
+def _exec_namespace():
+    if not _EXEC_NS:
+        import arrangement as _arr
+        _EXEC_NS.update({"channels": channels, "device": device, "general": general, "midi": midi,
+                         "mixer": mixer, "patterns": patterns, "playlist": playlist,
+                         "plugins": plugins, "transport": transport, "ui": ui,
+                         "arrangement": _arr, "utils": utils, "math": math, "time": time})
+    return _EXEC_NS
+
+
+def _h_exec(p):
+    global _EXEC_OUT
+    if p.get("reset_code"):
+        del _EXEC_CODE[:]
+    _EXEC_CODE.append(p.get("code", ""))
+    if not p.get("run", True):
+        return {"buffered": sum(len(c) for c in _EXEC_CODE)}
+    code = "".join(_EXEC_CODE)
+    del _EXEC_CODE[:]
+    ns = _exec_namespace()
+    ns["result"] = None
+    printed = []
+    ns["log"] = lambda *a: printed.append(" ".join(str(x) for x in a))
+    try:
+        exec(compile(code, "<mcp-exec>", "exec"), ns)
+        out = {"ok": True, "result": ns.get("result"), "log": printed}
+    except Exception as e:
+        out = {"ok": False, "error": "%s: %s" % (type(e).__name__, e), "log": printed}
+    try:
+        _EXEC_OUT = json.dumps(out, separators=(",", ":"), default=str)
+    except Exception as e:
+        _EXEC_OUT = json.dumps({"ok": False, "error": "result not JSON: %s" % e})
+    size = int(p.get("page", _EXEC_PAGE))
+    return {"total": len(_EXEC_OUT), "chunk": _EXEC_OUT[:size]}
+
+
+def _h_exec_fetch(p):
+    off = int(p.get("offset", 0))
+    size = int(p.get("page", _EXEC_PAGE))
+    return {"total": len(_EXEC_OUT), "chunk": _EXEC_OUT[off:off + size]}
+
+
 _HANDLERS = {
+    "exec": _h_exec,
+    "exec_fetch": _h_exec_fetch,
     "ping": _h_ping,
     "get_tempo": _h_get_tempo,
     "set_tempo": _h_set_tempo,
@@ -1099,5 +1511,20 @@ _HANDLERS = {
     "arrange_add_marker": _h_arrange_add_marker,
     "channel_select": _h_channel_select,
     "ensure_piano_roll": _h_ensure_piano_roll,
+    "pianoroll_status": _h_pianoroll_status,
+    "pianoroll_target": _h_pianoroll_target,
+    "steps_write": _h_steps_write,
+    "steps_read": _h_steps_read,
+    "pattern_set_length": _h_pattern_set_length,
+    "project_info": _h_project_info,
+    "project_save": _h_project_save,
+    "undo": _h_undo,
+    "channel_props": _h_channel_props,
+    "swing": _h_swing,
+    "playlist_tracks": _h_playlist_tracks,
+    "playlist_set_track": _h_playlist_set_track,
+    "pattern_set": _h_pattern_set,
+    "mixer_slots": _h_mixer_slots,
+    "mixer_set_slot": _h_mixer_set_slot,
     "pattern_list": _h_pattern_list,
 }

@@ -159,9 +159,27 @@ class FLBridge:
         logger.info("Opening MIDI ports: out=%r, in=%r", out_match, in_match)
         self._out_port = mido.open_output(out_match)
         self._in_port = mido.open_input(in_match, callback=self._on_midi)
+        # FL sometimes re-enables the "to FL" port as an OUTPUT with the same
+        # port number when a project loads; its replies then go there instead
+        # of to the "from FL" port. Listen on that port too so that can't
+        # silently cut the bridge (our own requests echoed there are ignored).
+        self._in_port2 = None
+        echo = _find_port(self._port_to_fl_pattern, in_names)
+        if echo and echo != in_match:
+            try:
+                self._in_port2 = mido.open_input(echo, callback=self._on_midi)
+            except Exception as e:  # pragma: no cover - port busy on some drivers
+                logger.info("Could not also listen on %r: %s", echo, e)
         self._opened = True
+        self._opened_at = time.monotonic()
 
     def close(self) -> None:
+        if getattr(self, "_in_port2", None) is not None:
+            try:
+                self._in_port2.close()
+            except Exception:  # pragma: no cover
+                pass
+            self._in_port2 = None
         if self._in_port is not None:
             try:
                 self._in_port.close()
@@ -203,15 +221,28 @@ class FLBridge:
             # First call after open(): give FL a moment to send a heartbeat.
             self.wait_for_heartbeat()
         if not self.is_alive():
-            raise FLNotRunning(
-                "FL Studio controller is not responding. Verify:\n"
-                "  1. FL Studio is open.\n"
-                "  2. FLStudioMCP is selected as the Controller type for the "
-                "virtual MIDI input port in Options > MIDI Settings.\n"
-                "  3. The OUTPUT virtual MIDI port has the same Port number as "
-                "the INPUT port so the script can route SysEx back to the server.\n"
-                "  4. View > Script output shows '[FLStudioMCP] Ready'."
-            )
+            raise FLNotRunning(self._not_responding_message())
+
+    def _not_responding_message(self) -> str:
+        """Say WHICH direction is broken: never heard from FL (output-port
+        setup) vs heard from FL and then it went quiet (FL closed/blocked)."""
+        age = self.heartbeat_age()
+        if age is None:
+            since = time.monotonic() - getattr(self, "_opened_at", time.monotonic())
+            return (
+                "FL Studio has sent nothing to the MCP since the bridge opened "
+                "%.0fs ago, so FL's replies are not reaching it. Verify:\n"
+                "  1. FL Studio is open and View > Script output shows "
+                "'[FLStudioMCP] Ready' (if it does, the problem is steps 2-4).\n"
+                "  2. Options > MIDI Settings > Output: 'FLStudioMCP TX' is enabled "
+                "with the SAME Port number as the 'FLStudioMCP RX' input.\n"
+                "  3. 'FLStudioMCP TX' is NOT also enabled in the Input list.\n"
+                "  4. loopMIDI hasn't muted either port (feedback detection).\n"
+                "FL restarts can drop the output-port assignment." % since)
+        return (
+            "FL Studio stopped responding: last heartbeat %.0fs ago. FL may have "
+            "closed, the FLStudioMCP script may have been reloaded or crashed "
+            "(check View > Script output), or a modal dialog is blocking FL." % age)
 
     # -- request / response --------------------------------------------------
 
@@ -251,22 +282,15 @@ class FLBridge:
             with self._lock:
                 self._pending.pop(request_id, None)
 
-    def apply_notes(self, notes, mode="replace", trigger=True, quantize=None, snap_ends=False):
+    def apply_notes(self, notes, mode="replace", trigger=True, quantize=None, snap_ends=False,
+                    channel=None):
         """Author piano-roll notes locally (direct mode: this process writes
-        the generated .pyscript and triggers FL itself). Auto-opens the Piano
-        roll first so the trigger has a target. ``quantize`` (grid in bars)
-        instead snaps existing notes to that grid."""
-        from .pianoroll import apply_notes as _apply
-        ensured = None
-        if trigger:
-            try:
-                ensured = self.call(protocol.CMD_ENSURE_PIANO_ROLL, {}, timeout=5.0)
-            except Exception as e:
-                ensured = {"ok": False, "error": "%s: %s" % (type(e).__name__, e)}
-        res = _apply(notes, mode, trigger=trigger, quantize=quantize, snap_ends=snap_ends)
-        if isinstance(res, dict) and ensured is not None:
-            res["piano_roll_ensured"] = ensured
-        return res
+        the generated .pyscript and triggers FL itself). Opens the Piano roll
+        on ``channel`` (verified via its caption) before writing; refuses if it
+        can't. ``quantize`` (grid in bars) instead snaps existing notes."""
+        from .pianoroll import targeted_apply
+        return targeted_apply(self.call, notes, mode, trigger=trigger, quantize=quantize,
+                              snap_ends=snap_ends, channel=channel)
 
     # -- inbound MIDI callback -----------------------------------------------
 
@@ -295,8 +319,7 @@ class FLBridge:
             slot.event.set()
             return
 
-        # DIR_REQUEST coming from FL is a protocol error; we don't handle it.
-        logger.warning("Unexpected direction %d from FL", direction)
+        # A request here is our own, echoed back on the "to FL" port.
 
 
 # ---------------------------------------------------------------------------
@@ -403,14 +426,15 @@ class TCPBridge:
             raise FLPortMissing(msg)
         raise FLBridgeError(msg)
 
-    def apply_notes(self, notes, mode="replace", trigger=True, quantize=None, snap_ends=False):
+    def apply_notes(self, notes, mode="replace", trigger=True, quantize=None, snap_ends=False,
+                    channel=None):
         """Author piano-roll notes via the daemon (write generated .pyscript +
-        fire the platform run-last-script shortcut). ``quantize`` (grid in
-        bars) instead snaps existing notes."""
+        fire the platform run-last-script shortcut), targeting ``channel``.
+        ``quantize`` (grid in bars) instead snaps existing notes."""
         try:
             return self._rpc(
                 {"op": "apply_notes", "notes": notes, "mode": mode, "trigger": trigger,
-                 "quantize": quantize, "snap_ends": snap_ends},
+                 "quantize": quantize, "snap_ends": snap_ends, "channel": channel},
                 timeout=30.0,
             )
         except OSError as e:

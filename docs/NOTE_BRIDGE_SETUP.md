@@ -12,8 +12,12 @@ with the notes baked in, then fires FL's **"Run last script again" (Ctrl+Alt+Y)*
 - **Piano roll auto-opens.** Before every note-write the controller runs
   `ui.showWindow(widPianoRoll)` (proven to open it from a *closed* state). The
   response carries `piano_roll_ensured`. → no manual "open the piano roll".
-- **Channel targeting.** `fl_arrange_select_channel(n)` selects the channel; the
-  piano roll follows it, so notes go to the intended instrument.
+- **Channel targeting.** The Piano roll follows the *selected* channel, but
+  its caption carries no channel name, so the only proof is the saved project.
+  `fl_write_piano_roll_notes(channel=n)` selects exactly that channel (refusing
+  to write if the selection readback differs), writes, then saves and re-reads
+  the .flp and reports `verify` (expected/found/misplaced_on). Tested on FL
+  26.1: 5/6 trials landed first time; the miss was caught by the .flp readback.
 
 ## The ONE irreducible manual step (per FL session)
 **Run `MCP Apply` once from the Piano roll's Scripting menu at session start.**
