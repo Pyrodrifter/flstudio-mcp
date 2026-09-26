@@ -50,6 +50,55 @@ def note_name(key: int) -> str:
     return "%s%d" % (NOTE_NAMES[key % 12], key // 12)
 
 
+_TEXT_IDS = set(range(192, 208)) | {231, 239, 241}
+
+
+def _varint(data: bytes, i: int):
+    size, shift = 0, 0
+    while i < len(data):
+        b = data[i]
+        i += 1
+        size |= (b & 0x7F) << shift
+        shift += 7
+        if not b & 0x80:
+            return size, i
+        if shift > 28:
+            break
+    return None, i
+
+
+def _is_text(raw: bytes) -> bool:
+    if len(raw) < 4 or len(raw) % 2 or raw[-2:] != b"\x00\x00":
+        return False
+    txt = raw[:-2].decode("utf-16-le", "replace")
+    return all(c.isprintable() for c in txt)
+
+
+def _score(data: bytes, i: int, window: int = 6) -> int:
+    """How plausible is an event boundary at ``i``? +1 per well-formed text
+    event in the next ``window`` events, -1 if a length overruns the data."""
+    score, n = 0, len(data)
+    for _ in range(window):
+        if i >= n:
+            break
+        eid = data[i]
+        i += 1
+        if eid < 64:
+            i += 1
+        elif eid < 128:
+            i += 2
+        elif eid < 192:
+            i += 4
+        else:
+            size, i = _varint(data, i)
+            if size is None or i + size > n:
+                return -1
+            if eid in _TEXT_IDS and _is_text(data[i:i + size]):
+                score += 1
+            i += size
+    return score
+
+
 def _events(data: bytes) -> Iterator[Tuple[int, bytes]]:
     i, n = 0, len(data)
     while i < n:
@@ -60,16 +109,22 @@ def _events(data: bytes) -> Iterator[Tuple[int, bytes]]:
         elif eid < 128:
             size = 2
         elif eid < 192:
+            # FL 26 writes some dword-range events (seen: id 172) with 3 or
+            # 5 payload bytes. Reading 4 then desyncs the whole stream (it
+            # swallowed pattern 1 and the tempo), so when the boundary after
+            # 4 bytes looks implausible, take a neighbour size whose
+            # following events decode as well-formed text.
             size = 4
+            base = _score(data, i + 4)
+            if base <= 0:
+                for alt in (3, 5):
+                    sc = _score(data, i + alt)
+                    if sc > max(base, 0):
+                        size, base = alt, sc
         else:
-            size, shift = 0, 0
-            while True:
-                b = data[i]
-                i += 1
-                size |= (b & 0x7F) << shift
-                shift += 7
-                if not b & 0x80:
-                    break
+            size, i = _varint(data, i)
+            if size is None:
+                return
         yield eid, data[i:i + size]
         i += size
 
@@ -179,6 +234,9 @@ def find_latest(title: Optional[str] = None, dirs: Optional[List[str]] = None) -
     files = []
     for d in dirs or project_dirs():
         files += glob.glob(os.path.join(d, "**", "*.flp"), recursive=True)
+    # Every save also writes "<name> (overwritten on ...).flp" into Backup
+    # holding the PREVIOUS state -- never read those as current.
+    files = [f for f in files if "(overwritten on" not in os.path.basename(f)]
     files.sort(key=os.path.getmtime, reverse=True)
     if title and "untitled" not in title.lower():
         for f in files:
@@ -223,7 +281,7 @@ def summarize(proj: dict) -> dict:
                         **({"pattern": it["pattern"]} if "pattern" in it else
                            {"channel": it["channel"]})} for it in a["items"]]}
             for a in proj["arrangements"]]
-    return {"file": proj["path"], "fl_version": proj["version"], "ppq": ppq,
+    return {"file": proj["path"], "fl_version": proj["version"], "tempo": proj["tempo"], "ppq": ppq,
             "channels": chans, "patterns": pats, "arrangements": arrs}
 
 
