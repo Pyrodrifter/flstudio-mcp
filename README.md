@@ -119,14 +119,14 @@ Linux is not yet supported — contributions welcome.
 
    Windows:
    ```bat
-   git clone https://github.com/rosasynthesiz/flstudio-mcp
+   git clone https://github.com/Pyrodrifter/flstudio-mcp
    cd flstudio-mcp
    scripts\install_windows.bat
    ```
 
    macOS:
    ```bash
-   git clone https://github.com/rosasynthesiz/flstudio-mcp
+   git clone https://github.com/Pyrodrifter/flstudio-mcp
    cd flstudio-mcp
    chmod +x scripts/install_macos.sh
    ./scripts/install_macos.sh
@@ -211,6 +211,6 @@ MIT — see [LICENSE](LICENSE).
 
 ## Status & contributing
 
-Beta — the public 1.0 release. Windows and macOS are supported; Linux contributions are welcome. Issues and pull requests: [github.com/rosasynthesiz/flstudio-mcp](https://github.com/rosasynthesiz/flstudio-mcp).
+Beta — the public 1.0 release. Windows and macOS are supported; Linux contributions are welcome. This is [Pyrodrifter's fork](https://github.com/Pyrodrifter/flstudio-mcp) of [rosasynthesiz/flstudio-mcp](https://github.com/rosasynthesiz/flstudio-mcp), adding Performance Mode setup, `fl_exec` and the project-file tools; it pairs with the [Akai Force script for FL Studio](https://github.com/Pyrodrifter/akai-force-fl-studio).
 
 <!-- mcp-name: io.github.rosasynthesiz/flstudio-mcp -->
