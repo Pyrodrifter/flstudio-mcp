@@ -1136,7 +1136,12 @@ def _h_steps_write(p):
                                              int(round(float(pan) * 128)))
         shift = entry[4] if len(entry) > 4 else None     # delay in ticks
         if shift is not None:
-            channels.setStepParameterByIndex(idx, pat, s, midi.pShift, int(shift))
+            # FL 26 treats pShift as the note's ABSOLUTE tick position in the
+            # pattern (shift=6 on step 12 moved it to tick 6; 12*24+6 landed at
+            # tick 294), so convert the caller's per-step offset.
+            per_step = int(round(general.getRecPPQ() / 4.0))
+            channels.setStepParameterByIndex(idx, pat, s, midi.pShift,
+                                             s * per_step + int(shift))
     want = set(int(s[0]) for s in steps)
     missing = [s for s in sorted(want) if not channels.getGridBit(idx, s)]
     return {"ok": not missing, "channel": idx, "name": channels.getChannelName(idx),
@@ -1208,7 +1213,9 @@ def _undo_state():
 def _h_undo(p):
     """Step FL's undo history: undo `steps` times, or redo when redo=true.
     Acts on FL's own history, so it also undoes edits made by hand."""
-    steps = max(1, min(50, int(p.get("steps", 1))))
+    steps = max(0, min(50, int(p.get("steps", 1))))
+    if steps == 0:                       # report only: what would be undone
+        return {"steps": 0, "state": _undo_state()}
     before = _undo_state()
     fn = general.undoDown if p.get("redo") else general.undoUp
     for _ in range(steps):
@@ -1220,22 +1227,23 @@ def _h_undo(p):
 def _channel_props(idx):
     out = {"channel": idx, "name": channels.getChannelName(idx)}
     try:
-        out["swing"] = channels.getSwing(idx)
-    except Exception as e:
-        out["swing_error"] = str(e)
-    try:
         out["pitch_cents"] = channels.getChannelPitch(idx, 1)
     except Exception as e:
         out["pitch_error"] = str(e)
     return out
 
 
+def _h_swing(p):
+    """Project-wide swing (FL 26: channels.getSwing() takes no channel)."""
+    if p.get("value") is not None:
+        channels.setSwing(int(p["value"]))
+    return {"swing": channels.getSwing()}
+
+
 def _h_channel_props(p):
-    """Read, and optionally set, a channel's swing and pitch (cents)."""
+    """Read, and optionally set, a channel's pitch (cents)."""
     idx = int(p["channel"])
     _check_channel(idx)
-    if p.get("swing") is not None:
-        channels.setSwing(idx, int(p["swing"]))
     if p.get("pitch_cents") is not None:
         channels.setChannelPitch(idx, float(p["pitch_cents"]), 1)
     return _channel_props(idx)
@@ -1412,6 +1420,7 @@ _HANDLERS = {
     "project_save": _h_project_save,
     "undo": _h_undo,
     "channel_props": _h_channel_props,
+    "swing": _h_swing,
     "playlist_tracks": _h_playlist_tracks,
     "playlist_set_track": _h_playlist_set_track,
     "pattern_set": _h_pattern_set,

@@ -24,7 +24,7 @@ class Step(BaseModel):
     velocity: Optional[float] = Field(None, ge=0.0, le=1.0, description="0..1; omit for the channel default.")
     pitch: Optional[int] = Field(None, ge=0, le=127, description="MIDI key; omit for the channel default.")
     pan: Optional[float] = Field(None, ge=0.0, le=1.0, description="0 = left, 0.5 = centre, 1 = right.")
-    shift: Optional[int] = Field(None, ge=0, description="Delay in ticks (swing/humanise); omit for none.")
+    shift: Optional[int] = Field(None, ge=0, description="Delay in ticks after the step (PPQ/4 ticks per step, 24 at PPQ 96) for swing/humanise; omit for none.")
 
 
 def write_steps(bridge, channel: int, steps: List[Step], clear: bool = True,

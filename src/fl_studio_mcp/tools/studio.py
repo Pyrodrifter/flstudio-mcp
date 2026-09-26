@@ -47,24 +47,31 @@ def register(mcp: FastMCP) -> None:
     @mcp.tool(annotations={"title": "Undo / redo", **_WR, "idempotentHint": False,
                            "destructiveHint": True})
     def fl_undo(
-        steps: Annotated[int, Field(ge=1, le=50, description="How many history steps.")] = 1,
+        steps: Annotated[int, Field(ge=0, le=50, description="How many history steps; 0 = only report what would be undone.")] = 1,
         redo: Annotated[bool, Field(description="Redo instead of undo.")] = False,
     ) -> dict:
         """Step FL's own undo history (Ctrl+Z / redo). It is FL's global
-        history, so it also undoes edits made by hand -- check `before.hint`
-        (the step's description) when in doubt."""
+        history, so it also undoes edits made by hand -- call with steps=0
+        first to see the current step's description (`hint`)."""
         return get_bridge().call(protocol.CMD_UNDO, {"steps": steps, "redo": redo})
 
-    @mcp.tool(annotations={"title": "Channel swing / pitch", **_WR})
+    @mcp.tool(annotations={"title": "Project swing", **_WR})
+    def fl_swing(
+        value: Annotated[Optional[int], Field(ge=0, le=128, description="Swing amount; omit to only read.")] = None,
+    ) -> dict:
+        """Read (and optionally set) the project-wide swing -- FL's main swing
+        knob, which applies to step-sequencer patterns."""
+        return get_bridge().call(protocol.CMD_SWING, {"value": value})
+
+    @mcp.tool(annotations={"title": "Channel pitch", **_WR})
     def fl_channel_props(
         channel: Annotated[int, Field(ge=0, description="Channel-rack index.")],
-        swing: Annotated[Optional[int], Field(ge=0, le=128, description="Channel swing amount; omit to only read.")] = None,
         pitch_cents: Annotated[Optional[float], Field(ge=-4800, le=4800, description="Channel pitch in cents; omit to only read.")] = None,
     ) -> dict:
-        """Read (and optionally set) a channel's swing and pitch. Returns the
-        values read back after any change."""
+        """Read (and optionally set) a channel's pitch in cents. Returns the
+        value read back after any change. (Swing is project-wide: fl_swing.)"""
         return get_bridge().call(protocol.CMD_CHANNEL_PROPS, {
-            "channel": channel, "swing": swing, "pitch_cents": pitch_cents})
+            "channel": channel, "pitch_cents": pitch_cents})
 
     @mcp.tool(annotations={"title": "List playlist tracks", **_RO})
     def fl_playlist_tracks(
@@ -78,7 +85,7 @@ def register(mcp: FastMCP) -> None:
     @mcp.tool(annotations={"title": "Set playlist track name/colour/mute", **_WR})
     def fl_set_playlist_track(
         track: Annotated[int, Field(ge=1, description="Playlist track (1-based).")],
-        name: Annotated[Optional[str], Field(description="New name; omit to leave.")] = None,
+        name: Annotated[Optional[str], Field(description="New name; '' restores FL's default ('Track N'); omit to leave.")] = None,
         color: _ColorArg = None,
         mute: Annotated[Optional[bool], Field(description="Mute state; omit to leave.")] = None,
     ) -> dict:

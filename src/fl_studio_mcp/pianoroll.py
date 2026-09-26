@@ -77,9 +77,12 @@ def verify_write(call, notes, channel, pattern, mode):
     got = (proj["patterns"].get(pattern) or {}).get("notes", [])
     on_target = {(n["key"], n["position"]) for n in got if n["channel"] == channel}
     found = len(want & on_target)
+    # Only notes MISSING from the target count as misplaced -- an identical
+    # pre-existing note on another channel is not evidence of a stray write.
+    missing = want - on_target
     elsewhere = {}
     for n in got:
-        if n["channel"] != channel and (n["key"], n["position"]) in want:
+        if n["channel"] != channel and (n["key"], n["position"]) in missing:
             elsewhere[n["channel"]] = elsewhere.get(n["channel"], 0) + 1
     out = {"ok": found == len(want), "pattern": pattern, "channel": channel,
            "expected": len(want), "found": found, "file": proj["path"]}
