@@ -58,6 +58,7 @@ Full setup is below.
 ### Composition
 - **Multi-track MIDI export** — generate a complete arrangement as a standard MIDI file to import.
 - **Multi-pattern arrangement** — create, name, clone, and mark sections.
+- **Performance Mode setup** — build a clip-launch grid (tracks × blocks), named block markers, the Start marker that ends the performance zone, and per-track launch settings (motion, press, trigger/position sync) in one call (`fl_perf_setup`, writes a project copy); read it back with `fl_perf_read`.
 - **Note and chord writing** into the piano roll, with quantize to a grid (for new notes and existing ones).
 - **Composition in any scale or mode** — Western modes, pentatonic, ragas, maqam, and beyond — through the scale composer, where Claude supplies the notes for the requested scale.
 
@@ -65,7 +66,7 @@ Full setup is below.
 - Tempo and key estimation from an audio file.
 - Melody-to-MIDI transcription (CREPE pitch tracking, with a lighter fallback).
 
-The server exposes 67 tools across 14 categories, plus 6 live resources (project, mixer, transport, channels, patterns, status) that Claude can read directly.
+The server exposes 69 tools across 14 categories, plus 6 live resources (project, mixer, transport, channels, patterns, status) that Claude can read directly.
 
 ## What sets it apart
 
