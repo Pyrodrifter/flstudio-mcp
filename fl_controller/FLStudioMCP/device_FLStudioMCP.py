@@ -1094,9 +1094,11 @@ def _check_channel(idx):
 
 
 def _pattern_steps(pat):
-    """Pattern length in 16th steps (getPatternLength is in beats)."""
+    """Pattern length in 16th steps. getPatternLength/setPatternLength count
+    16th STEPS on FL 26.1 (8-bar patterns report 128; setting 32 made the
+    Drums pattern 2 bars), despite the API docs saying beats."""
     try:
-        return max(16, int(round(patterns.getPatternLength(pat) * 4)))
+        return max(16, int(patterns.getPatternLength(pat)))
     except Exception:
         return 16
 
@@ -1181,8 +1183,9 @@ def _h_steps_read(p):
 def _h_pattern_set_length(p):
     """Set a pattern's length in beats (default: current pattern)."""
     pat = int(p.get("pattern") or patterns.patternNumber())
-    patterns.setPatternLength(pat, int(p["beats"]))
-    return {"pattern": pat, "length_beats": patterns.getPatternLength(pat)}
+    _save_undo("MCP: pattern %d length" % pat, "UF_None")
+    patterns.setPatternLength(pat, int(p["beats"]) * 4)       # API counts 16th steps
+    return {"pattern": pat, "length_beats": patterns.getPatternLength(pat) / 4.0}
 
 
 def _project_title():
@@ -1307,19 +1310,21 @@ def _h_pattern_set(p):
     if p.get("color") is not None or p.get("r") is not None:
         patterns.setPatternColor(pat, _resolve_color(p))
     if p.get("length_beats") is not None:
-        patterns.setPatternLength(pat, int(p["length_beats"]))
+        patterns.setPatternLength(pat, int(p["length_beats"]) * 4)   # API counts 16th steps
     if p.get("select"):
         patterns.jumpToPattern(pat)
     return {"pattern": pat, "name": patterns.getPatternName(pat),
             "selected": patterns.patternNumber(),
             "color": _color_out(patterns.getPatternColor(pat)),
-            "length_beats": patterns.getPatternLength(pat)}
+            "length_beats": patterns.getPatternLength(pat) / 4.0}
 
 
 def _slot_info(track, s):
     info = {"slot": s, "name": plugins.getPluginName(track, s)}
     for key, fn in (("mix", lambda: mixer.getPluginMixLevel(track, s)),
-                    ("muted", lambda: bool(mixer.getPluginMuteState(track, s)))):
+                    # getPluginMuteState returns ENABLED on FL 26.1 (Maximus on ->
+                    # True, Emphasizer off -> False, checked against the UI).
+                    ("muted", lambda: not mixer.getPluginMuteState(track, s))):
         try:
             info[key] = fn()
         except Exception as e:
@@ -1358,7 +1363,7 @@ def _h_mixer_set_slot(p):
         if p.get("mix") is not None:
             mixer.setPluginMixLevel(track, s, float(p["mix"]))
         if p.get("mute") is not None:
-            mixer.setPluginMuteState(track, s, bool(p["mute"]))
+            mixer.setPluginMuteState(track, s, not bool(p["mute"]))   # API value = enabled
     return _h_mixer_slots({"track": track})
 
 
