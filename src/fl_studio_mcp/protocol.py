@@ -159,6 +159,8 @@ CMD_PIANOROLL_TARGET = "pianoroll_target"              # select channel + reopen
 CMD_STEPS_WRITE = "steps_write"                        # setGridBit + step params, readback
 CMD_STEPS_READ = "steps_read"                          # getGridBit scan (paged)
 CMD_PATTERN_SET_LENGTH = "pattern_set_length"          # patterns.setPatternLength (beats)
+CMD_PROJECT_INFO = "project_info"                      # window title (project name)
+CMD_PROJECT_SAVE = "project_save"                      # FPT_Save; refused if untitled
 
 
 # ---------------------------------------------------------------------------

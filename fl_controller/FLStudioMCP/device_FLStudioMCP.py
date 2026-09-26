@@ -1178,6 +1178,30 @@ def _h_pattern_set_length(p):
     return {"pattern": pat, "length_beats": patterns.getPatternLength(pat)}
 
 
+def _project_title():
+    try:
+        return ui.getProgTitle()
+    except Exception:
+        return None
+
+
+def _h_project_info(p):
+    """Window title (carries the project name; 'untitled' if never saved)."""
+    return {"title": _project_title()}
+
+
+def _h_project_save(p):
+    """Ctrl+S equivalent so the .flp on disk is current (the MCP reads it for
+    note/sample/playlist readback). Refused for never-saved projects, where
+    FL would pop a Save-As dialog and block the controller."""
+    title = _project_title() or ""
+    if "untitled" in title.lower():
+        return {"ok": False, "title": title,
+                "error": "Project has never been saved -- save it once in FL (Ctrl+S) first."}
+    transport.globalTransport(midi.FPT_Save, 1)
+    return {"ok": True, "title": title}
+
+
 def _h_arrange_add_marker(p):
     if arrangement is None:
         return {"ok": False, "error": "arrangement module not available"}
@@ -1251,5 +1275,7 @@ _HANDLERS = {
     "steps_write": _h_steps_write,
     "steps_read": _h_steps_read,
     "pattern_set_length": _h_pattern_set_length,
+    "project_info": _h_project_info,
+    "project_save": _h_project_save,
     "pattern_list": _h_pattern_list,
 }
