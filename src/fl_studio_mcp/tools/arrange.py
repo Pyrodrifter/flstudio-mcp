@@ -46,7 +46,9 @@ def register(mcp: FastMCP) -> None:
         new_name: Annotated[str, Field(description="Name for the clone.")],
     ) -> dict:
         """Clone a pattern (copies its notes) and rename the clone -- e.g. for
-        verse -> verse2 variations."""
+        verse -> verse2 variations. FL 26 inserts the clone RIGHT AFTER the
+        source and renumbers every later pattern (+1); playlist clips follow
+        automatically, but re-read pattern numbers before using them."""
         return get_bridge().call(protocol.CMD_ARRANGE_CLONE_PATTERN,
                                  {"src": src, "new_name": new_name})
 
