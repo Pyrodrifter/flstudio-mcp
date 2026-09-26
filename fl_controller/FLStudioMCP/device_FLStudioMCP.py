@@ -1049,18 +1049,15 @@ def _pianoroll_status():
     return out
 
 
-def _caption_matches(caption, name):
-    return bool(caption) and bool(name) and caption.rstrip().endswith(name)
-
-
 def _h_pianoroll_status(p):
     return _pianoroll_status()
 
 
 def _h_pianoroll_target(p):
-    """Select a channel AND reopen the Piano roll on it, then report the
-    caption so the caller can verify before writing. Strategies are tried in
-    order until the caption names the channel."""
+    """Select exactly one channel and reopen the Piano roll so it shows it.
+    The Piano roll follows the selected channel (verified against the saved
+    .flp); its caption carries no channel name, so success is judged by the
+    selection readback. The server verifies the written notes afterwards."""
     idx = int(p["channel"])
     if idx < 0 or idx >= channels.channelCount():
         return {"ok": False, "error": "channel %d out of range (0-%d)"
@@ -1069,32 +1066,17 @@ def _h_pianoroll_target(p):
     wid = getattr(midi, "widPianoRoll", None)
     try:
         channels.selectOneChannel(idx)
-    except Exception as e:
-        return {"ok": False, "error": "selectOneChannel: %s" % e}
-
-    def reopen():
         ui.hideWindow(wid)
         ui.showWindow(wid)
-
-    def focus_editor():
-        reopen()
-        channels.focusEditor(idx)
-
-    attempts = []
-    for label, fn in (("reopen", reopen), ("focusEditor", focus_editor)):
-        try:
-            fn()
-        except Exception as e:
-            attempts.append({"method": label, "error": str(e)})
-            continue
-        st = _pianoroll_status()
-        attempts.append({"method": label, "caption": st.get("caption")})
-        if _caption_matches(st.get("caption"), name):
-            return {"ok": True, "channel": idx, "name": name, "method": label,
-                    "status": st, "attempts": attempts}
-    return {"ok": False, "channel": idx, "name": name, "status": _pianoroll_status(),
-            "attempts": attempts,
-            "error": "Piano roll did not switch to channel %d (%s)" % (idx, name)}
+    except Exception as e:
+        return {"ok": False, "channel": idx, "name": name, "error": "%s" % e}
+    st = _pianoroll_status()
+    ok = st.get("selected_channel") == idx
+    out = {"ok": ok, "channel": idx, "name": name, "status": st}
+    if not ok:
+        out["error"] = "selection is %r, not channel %d (%s)" % (
+            st.get("selected_name"), idx, name)
+    return out
 
 
 def _h_channel_select(p):

@@ -47,18 +47,22 @@ def register(mcp: FastMCP) -> None:
         )] = 0.0,
         channel: Annotated[Optional[int], Field(
             ge=0,
-            description="Channel-rack index to write into. The Piano roll is reopened on this "
-                        "channel and its caption verified first; the write is refused if it "
-                        "doesn't match. Omit only to write into whatever the Piano roll shows.",
+            description="Channel-rack index to write into. It is selected (the Piano roll follows "
+                        "the selection) and the write is refused if the selection doesn't take; "
+                        "afterwards the project is saved and re-read to verify where the notes "
+                        "landed. Omit only to write into whatever the Piano roll shows.",
         )] = None,
     ) -> dict:
         """Write notes into one channel of the current pattern via the FL Piano roll.
 
         Always pass `channel`. Each note: {pitch (MIDI), time_bars, length_bars,
         velocity 0-1}. Set quantize (grid in bars) to snap note starts first.
-        The result's `piano_roll` field reports the caption/pattern actually
-        written to. Setup: run 'MCP_Apply' once from the Piano roll Scripting
-        menu per FL session. mode='replace' clears that channel's notes first.
+        With `channel`, the result's `verify` field comes from saving and
+        re-reading the .flp: expected vs found notes on that channel, and any
+        `misplaced_on` other channels (then ok=false). Needs a saved (named)
+        project; otherwise verify is skipped. Setup: run 'MCP_Apply' once from
+        the Piano roll Scripting menu per FL session. mode='replace' clears
+        that channel's notes in the pattern first.
         """
         arr = [n.model_dump() for n in notes]
         if quantize and quantize > 0:

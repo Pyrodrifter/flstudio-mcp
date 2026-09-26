@@ -81,8 +81,13 @@ def _text(raw: bytes, utf16: bool) -> str:
 
 
 def _playlist_items(raw: bytes) -> List[dict]:
-    # Item size grew over versions (32 -> 60 bytes); pick the one that divides.
-    size = next((s for s in (60, 32) if raw and len(raw) % s == 0), None)
+    # Item size grew over versions (32 -> 60 -> 88 bytes in FL 26). Several
+    # sizes can divide the blob, so pick the smallest one where every item
+    # carries the constant pattern_base (20480) at offset 4.
+    base = struct.pack("<H", _PATTERN_BASE)
+    size = next((s for s in range(32, len(raw) + 1, 4)
+                 if len(raw) % s == 0
+                 and all(raw[o + 4:o + 6] == base for o in range(0, len(raw), s))), None)
     if size is None:
         return []
     out = []
@@ -213,7 +218,7 @@ def summarize(proj: dict) -> dict:
                      "notes": [{"channel": ch, "name": names.get(ch), "count": k}
                                for ch, k in sorted(counts.items())]})
     arrs = [{"arrangement": a["iid"], "name": a["name"],
-             "clips": [{"track": it["track"], "start_bar": _bars(it["position"], ppq),
+             "clips": [{"track": it["track"], "bar": _bars(it["position"], ppq) + 1,
                         "length_bars": _bars(it["length"], ppq),
                         **({"pattern": it["pattern"]} if "pattern" in it else
                            {"channel": it["channel"]})} for it in a["items"]]}

@@ -19,49 +19,82 @@ from __future__ import annotations
 
 import time
 
-from . import protocol
+from . import flp_reader, protocol
 from .pyscript_gen import write_apply_script, write_quantize_script
 
 
 def prepare_target(call, channel=None):
-    """Open the Piano roll -- retargeted to ``channel`` when given -- and read
-    back which channel it is actually showing. ``call(cmd, params, timeout=)``
-    talks to the FL controller. Returns (ok, info); ok is False when a channel
-    was requested but the Piano roll caption does not name it, in which case
-    nothing must be written (it would land on the wrong instrument)."""
+    """Open the Piano roll -- on ``channel`` when given -- and read back the
+    selection. ``call(cmd, params, timeout=)`` talks to the FL controller.
+    The Piano roll follows the selected channel, so (ok, info) is ok only when
+    the selection readback is exactly ``channel``; otherwise nothing must be
+    written (it would land on the wrong instrument)."""
     info = {}
     try:
         if channel is None:
             info["piano_roll_ensured"] = call(protocol.CMD_ENSURE_PIANO_ROLL, {}, timeout=5.0)
-        else:
-            tgt = call(protocol.CMD_PIANOROLL_TARGET, {"channel": int(channel)}, timeout=5.0)
-            info["expected_channel"] = int(channel)
-            info["expected_name"] = tgt.get("name")
-            info["attempts"] = tgt.get("attempts")
-            if tgt.get("error") and not tgt.get("name"):
-                info["error"] = tgt["error"]
-                return False, info
-        time.sleep(0.25)                     # let FL repaint before reading the caption
-        status = call(protocol.CMD_PIANOROLL_STATUS, {}, timeout=5.0)
-        info["piano_roll"] = status
+            info["piano_roll"] = call(protocol.CMD_PIANOROLL_STATUS, {}, timeout=5.0)
+            return True, info
+        tgt = call(protocol.CMD_PIANOROLL_TARGET, {"channel": int(channel)}, timeout=5.0)
     except Exception as e:
         info["error"] = "%s: %s" % (type(e).__name__, e)
         return channel is None, info
-    if channel is None:
-        return True, info
-    caption = (status or {}).get("caption") or ""
-    name = info.get("expected_name") or ""
-    if name and caption.rstrip().endswith(name):
-        return True, info
-    info["error"] = ("Piano roll shows %r, expected channel %s (%r) -- not writing."
-                     % (caption, channel, name))
-    return False, info
+    info["expected_channel"] = int(channel)
+    info["expected_name"] = tgt.get("name")
+    info["piano_roll"] = tgt.get("status")
+    if not tgt.get("ok"):
+        info["error"] = "%s -- not writing." % (tgt.get("error") or "target failed")
+        return False, info
+    time.sleep(0.3)                          # let FL settle before the hotkey
+    return True, info
+
+
+def _save_and_parse(call):
+    """Ctrl+S the open project, wait for the file to update, parse it."""
+    t0 = time.time()
+    res = call(protocol.CMD_PROJECT_SAVE, {}, timeout=10.0)
+    if not res.get("ok"):
+        return None, res.get("error") or "save failed"
+    path = None
+    while time.time() - t0 < 8.0:
+        path = flp_reader.find_latest()
+        if path and flp_reader.file_age_seconds(path) < time.time() - t0 + 0.5:
+            break
+        time.sleep(0.2)
+    time.sleep(0.3)                          # let FL finish writing
+    return flp_reader.parse(path), None
+
+
+def verify_write(call, notes, channel, pattern, mode):
+    """Save + read the .flp and check the notes landed on ``channel`` in
+    ``pattern``. Returns {ok, found, expected, misplaced_on, ...}."""
+    time.sleep(0.8)                          # the pyscript runs asynchronously
+    proj, err = _save_and_parse(call)
+    if proj is None:
+        return {"ok": None, "skipped": err}
+    tick = proj["ppq"] * 4
+    want = {(int(n["pitch"]), int(round(float(n["time_bars"]) * tick))) for n in notes}
+    got = (proj["patterns"].get(pattern) or {}).get("notes", [])
+    on_target = {(n["key"], n["position"]) for n in got if n["channel"] == channel}
+    found = len(want & on_target)
+    elsewhere = {}
+    for n in got:
+        if n["channel"] != channel and (n["key"], n["position"]) in want:
+            elsewhere[n["channel"]] = elsewhere.get(n["channel"], 0) + 1
+    out = {"ok": found == len(want), "pattern": pattern, "channel": channel,
+           "expected": len(want), "found": found, "file": proj["path"]}
+    if mode == "replace":
+        out["extra_on_target"] = len(on_target - want)
+    if elsewhere:
+        out["misplaced_on"] = elsewhere
+    return out
 
 
 def targeted_apply(call, notes, mode="replace", trigger=True, quantize=None,
-                   snap_ends=False, channel=None):
-    """prepare_target + apply_notes: refuse to write when the target can't be
-    verified, and attach the Piano roll readback to every result."""
+                   snap_ends=False, channel=None, verify=True):
+    """prepare_target + apply_notes (+ save/read verification when a channel
+    is given): refuse to write when the target isn't selected, and report
+    where the notes actually landed."""
     info = {}
     if trigger:
         ok, info = prepare_target(call, channel)
@@ -70,6 +103,14 @@ def targeted_apply(call, notes, mode="replace", trigger=True, quantize=None,
     res = apply_notes(notes, mode, trigger=trigger, quantize=quantize, snap_ends=snap_ends)
     if isinstance(res, dict):
         res.update(info)
+        pattern = (info.get("piano_roll") or {}).get("pattern")
+        if verify and trigger and channel is not None and quantize is None and notes and pattern:
+            try:
+                res["verify"] = verify_write(call, notes, int(channel), pattern, mode)
+            except Exception as e:
+                res["verify"] = {"ok": None, "skipped": "%s: %s" % (type(e).__name__, e)}
+            if res["verify"].get("ok") is False:
+                res["ok"] = False
     return res
 
 
