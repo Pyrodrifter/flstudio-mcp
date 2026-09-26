@@ -23,6 +23,13 @@ from . import flp_reader
 
 _BASE = 20480
 
+# A plain 88-byte FL 26 pattern clip, used when the project has no clip to
+# clone yet (a brand-new project).
+_FL26_ITEM = bytes.fromhex(
+    "0000000000500850000c0000ee0100007800402040648080ffffffffffffffff2d010000"
+    "00000000000000000000000000000000000000000000000000000000000000000000f03f"
+    "00000000ffffffff0000000000000000")
+
 
 def _varint(n: int) -> bytes:
     out = bytearray()
@@ -74,13 +81,14 @@ def write_clips(src: str, dst: str, arrangement: int, clips: List[dict],
         raise ValueError("no arrangement %d (have %s)" % (arrangement, sorted(arrs)))
     span = arrs[arrangement]["span"]
     if span is None:
-        raise ValueError("arrangement %d has no clips yet -- place one clip by hand first "
-                         "so the writer has an item to clone" % arrangement)
+        raise ValueError("arrangement %d has no playlist-items event" % arrangement)
     start, p0, p1 = span
     existing = data[p0:p1]
     # An arrangement with no clips still has an (empty) items event; take the
     # item size from any arrangement that has clips.
     size = next((_item_size(x) for x in ([existing] if existing else []) + all_items if x), None)
+    if size is None and clips and not existing and not any(all_items):
+        size = len(_FL26_ITEM)                             # empty project: built-in template
     if size is None:
         if not clips and not existing:
             size = 1                                       # nothing to write or read
@@ -97,6 +105,8 @@ def write_clips(src: str, dst: str, arrangement: int, clips: List[dict],
             max_id = max(max_id, struct.unpack_from("<I", it, 32)[0])
             if template is None and struct.unpack_from("<H", it, 6)[0] > _BASE:
                 template = it
+    if template is None and clips and size == len(_FL26_ITEM):
+        template = _FL26_ITEM
     if template is None and clips:
         raise ValueError("no pattern clip to use as a template")
 

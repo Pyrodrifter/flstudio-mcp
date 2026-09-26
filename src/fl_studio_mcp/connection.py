@@ -159,10 +159,27 @@ class FLBridge:
         logger.info("Opening MIDI ports: out=%r, in=%r", out_match, in_match)
         self._out_port = mido.open_output(out_match)
         self._in_port = mido.open_input(in_match, callback=self._on_midi)
+        # FL sometimes re-enables the "to FL" port as an OUTPUT with the same
+        # port number when a project loads; its replies then go there instead
+        # of to the "from FL" port. Listen on that port too so that can't
+        # silently cut the bridge (our own requests echoed there are ignored).
+        self._in_port2 = None
+        echo = _find_port(self._port_to_fl_pattern, in_names)
+        if echo and echo != in_match:
+            try:
+                self._in_port2 = mido.open_input(echo, callback=self._on_midi)
+            except Exception as e:  # pragma: no cover - port busy on some drivers
+                logger.info("Could not also listen on %r: %s", echo, e)
         self._opened = True
         self._opened_at = time.monotonic()
 
     def close(self) -> None:
+        if getattr(self, "_in_port2", None) is not None:
+            try:
+                self._in_port2.close()
+            except Exception:  # pragma: no cover
+                pass
+            self._in_port2 = None
         if self._in_port is not None:
             try:
                 self._in_port.close()
@@ -302,8 +319,7 @@ class FLBridge:
             slot.event.set()
             return
 
-        # DIR_REQUEST coming from FL is a protocol error; we don't handle it.
-        logger.warning("Unexpected direction %d from FL", direction)
+        # A request here is our own, echoed back on the "to FL" port.
 
 
 # ---------------------------------------------------------------------------

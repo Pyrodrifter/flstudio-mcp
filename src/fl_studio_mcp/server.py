@@ -31,7 +31,9 @@ from .tools import bulk as bulk_tools
 from .tools import chains as chains_tools
 from .tools import color as color_tools
 from .tools import compose as compose_tools
+from .tools import exec_tool as exec_tools
 from .tools import export as export_tools
+from .tools import flp_tools
 from .tools import mix_doctor as mix_doctor_tools
 from .tools import mixing as mixing_tools
 from .tools import phase1 as phase1_tools
@@ -70,10 +72,12 @@ REQUIREMENTS
   5. Call fl_ping first to verify the bridge is healthy.
 
 LIMITS YOU SHOULD KNOW ABOUT (these are FL API limitations, not server bugs)
-  - Cannot load new VST/AU plugin instances. You can only control plugins
-    that already exist in the project.
-  - Cannot create new patterns from scratch. Work with existing patterns,
-    or clone via the Piano Roll pyscript.
+  - The live API can't load plugins, write piano-roll notes or place clips.
+    The fl_flp_* / fl_perf_setup tools do those in a COPY of the saved
+    project (then open it in FL): notes into any pattern, FL effects into
+    mixer slots, presets onto plugin channels, clip grids and markers.
+  - fl_exec runs Python inside FL for anything else in the scripting API
+    (pattern names/colours/lengths, routing, plugin params, perf clips).
   - Tempo writes are sometimes ignored if FL is in a modal dialog.
 
 When the user asks for something outside these limits, explain the limit
@@ -103,6 +107,8 @@ def build_server() -> FastMCP:
     audio_tools.register(mcp)       # Integration 2/3: audio analysis (tempo/key)
     compose_tools.register(mcp)     # Raga/scale composer: write Claude notes via the bridge
     chains_tools.register(mcp)      # Genre chain setup: map recipes to existing plugins
+    exec_tools.register(mcp)        # fl_exec: run Python inside FL
+    flp_tools.register(mcp)         # notes / presets / mixer FX via a project copy
     export_tools.register(mcp)      # MIDI export: arrangement spec -> type-1 .mid on disk
     presets_tools.register(mcp)     # Preset suggester: read preset names from disk
     mix_doctor_tools.register(mcp)  # Mix Doctor: diagnose whole mix + gated apply-fixes

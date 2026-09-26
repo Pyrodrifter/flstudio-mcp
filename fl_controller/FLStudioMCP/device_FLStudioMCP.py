@@ -300,7 +300,7 @@ def _h_ping(params):
     return {
         "fl_version": _fl_version,
         "protocol_version": PROTOCOL_VERSION,
-        "build": "color-v14",   # reload marker -- bump to verify reloads take
+        "build": "exec-v1",   # reload marker -- bump to verify reloads take
         "ts": time.time(),
     }
 
@@ -1410,7 +1410,63 @@ def _h_arrange_add_marker(p):
         return {"ok": False, "error": "addAutoTimeMarker: %s" % e}
 
 
+# -- exec: run Python inside FL (full API access) ----------------------------
+# The server may split long code across several requests (append=True); the
+# last one (run=True) executes it in a namespace that persists between calls,
+# so helpers defined once stay available. Whatever the code assigns to
+# `result` is JSON-encoded and handed back in <=600-byte pages (exec_fetch).
+
+_EXEC_NS = {}
+_EXEC_CODE = []
+_EXEC_OUT = ""
+_EXEC_PAGE = 250
+
+
+def _exec_namespace():
+    if not _EXEC_NS:
+        import arrangement as _arr
+        _EXEC_NS.update({"channels": channels, "device": device, "general": general, "midi": midi,
+                         "mixer": mixer, "patterns": patterns, "playlist": playlist,
+                         "plugins": plugins, "transport": transport, "ui": ui,
+                         "arrangement": _arr, "utils": utils, "math": math, "time": time})
+    return _EXEC_NS
+
+
+def _h_exec(p):
+    global _EXEC_OUT
+    if p.get("reset_code"):
+        del _EXEC_CODE[:]
+    _EXEC_CODE.append(p.get("code", ""))
+    if not p.get("run", True):
+        return {"buffered": sum(len(c) for c in _EXEC_CODE)}
+    code = "".join(_EXEC_CODE)
+    del _EXEC_CODE[:]
+    ns = _exec_namespace()
+    ns["result"] = None
+    printed = []
+    ns["log"] = lambda *a: printed.append(" ".join(str(x) for x in a))
+    try:
+        exec(compile(code, "<mcp-exec>", "exec"), ns)
+        out = {"ok": True, "result": ns.get("result"), "log": printed}
+    except Exception as e:
+        out = {"ok": False, "error": "%s: %s" % (type(e).__name__, e), "log": printed}
+    try:
+        _EXEC_OUT = json.dumps(out, separators=(",", ":"), default=str)
+    except Exception as e:
+        _EXEC_OUT = json.dumps({"ok": False, "error": "result not JSON: %s" % e})
+    size = int(p.get("page", _EXEC_PAGE))
+    return {"total": len(_EXEC_OUT), "chunk": _EXEC_OUT[:size]}
+
+
+def _h_exec_fetch(p):
+    off = int(p.get("offset", 0))
+    size = int(p.get("page", _EXEC_PAGE))
+    return {"total": len(_EXEC_OUT), "chunk": _EXEC_OUT[off:off + size]}
+
+
 _HANDLERS = {
+    "exec": _h_exec,
+    "exec_fetch": _h_exec_fetch,
     "ping": _h_ping,
     "get_tempo": _h_get_tempo,
     "set_tempo": _h_set_tempo,

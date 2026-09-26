@@ -62,6 +62,7 @@ audio-accurate = [
 [project.scripts]
 fl-studio-mcp = "fl_studio_mcp.server:main"
 fl-studio-mcp-daemon = "fl_studio_mcp.daemon:main"
+fl-exec = "fl_studio_mcp.fl_exec:main"
 
 [project.urls]
 Homepage = "https://github.com/rosasynthesiz/flstudio-mcp"

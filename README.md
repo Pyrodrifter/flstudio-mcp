@@ -58,6 +58,8 @@ Full setup is below.
 ### Composition
 - **Multi-track MIDI export** — generate a complete arrangement as a standard MIDI file to import.
 - **Multi-pattern arrangement** — create, name, clone, and mark sections.
+- **Project-file writing** (in a copy the tools verify, then you open): **notes** of any length/pitch/velocity into any pattern (`fl_flp_write_notes`), **FL effects into mixer slots** and **presets onto plugin channels** straight from FL's preset files (`fl_flp_load_plugins`, `fl_flp_list_presets`) — things FL's live API can't do.
+- **`fl_exec`** — run Python inside FL with the whole scripting API (pattern names/colours/lengths, routing, plugin parameters, live clips). Also a CLI: `fl-exec script.py`.
 - **Performance Mode setup** — build a clip-launch grid (tracks × blocks), named block markers, the Start marker that ends the performance zone, and per-track launch settings (motion, press, trigger/position sync) in one call (`fl_perf_setup`, writes a project copy); read it back with `fl_perf_read`.
 - **Note and chord writing** into the piano roll, with quantize to a grid (for new notes and existing ones).
 - **Composition in any scale or mode** — Western modes, pentatonic, ragas, maqam, and beyond — through the scale composer, where Claude supplies the notes for the requested scale.
@@ -66,7 +68,11 @@ Full setup is below.
 - Tempo and key estimation from an audio file.
 - Melody-to-MIDI transcription (CREPE pitch tracking, with a lighter fallback).
 
-The server exposes 69 tools across 14 categories, plus 6 live resources (project, mixer, transport, channels, patterns, status) that Claude can read directly.
+The server exposes 90 tools across 14 categories, plus 6 live resources (project, mixer, transport, channels, patterns, status) that Claude can read directly.
+
+### Example: a whole live set from code
+
+[`examples/techno_live`](examples/techno_live) builds a complete techno Performance Mode set from an empty project: 55 patterns across 12 roles, a clip grid of 8 scenes, block markers, launch settings, presets, mixer effects and sends. See its README.
 
 ## What sets it apart
 
@@ -76,7 +82,7 @@ flstudio-mcp is built as a mixing and production assistant, not only a note send
 
 These are properties of FL Studio's scripting API, stated plainly:
 
-- **Plugins, audio files, and rendering are UI-only.** FL's API cannot load a plugin, load an audio file, or render audio. The plugin and preset tools therefore *suggest* — you load the chosen plugin or preset, and Claude then configures it. Audio export is done manually (File > Export); Claude can analyze the rendered file afterward.
+- **Plugins, audio files, and rendering are UI-only in the live API.** FL's API cannot load a plugin, load an audio file, or render audio. `fl_flp_load_plugins` works around the first for FL's own effects and presets by writing a project copy; new *instruments* (channels) still have to be added by hand. Audio export is done manually (File > Export); Claude can analyze the rendered file afterward.
 - **Note writing is armed once per session.** A generated pyscript writes notes into the piano roll; FL exposes no API to run a pyscript, so you run "MCP_Apply" once from the piano roll's scripting menu at the start of a session.
 - **Micro-tonal and gamaka-heavy music is approximated.** Scales with intervals smaller than a semitone (e.g. Arabic maqam) are rounded to the nearest semitone, and traditions built on gamaka/ornamentation (e.g. Carnatic) get the *scale framework* — the correct swaras and intervals — not gamaka or micro-tonal rendering. That's a limit of 12-tone MIDI, not of the tools.
 
