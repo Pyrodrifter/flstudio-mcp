@@ -6,7 +6,7 @@ from typing import Annotated
 from fastmcp import FastMCP
 from pydantic import Field
 
-from .. import fl_exec
+from .. import fl_exec as _exec
 from ..connection import get_bridge
 
 
@@ -24,4 +24,4 @@ def register(mcp: FastMCP) -> None:
         scripting-API call (plugin params, pattern creation, playlist tracks,
         performance clips, mixer routing, ...). Returns {ok, result, log} or
         {ok: false, error}."""
-        return fl_exec.run(get_bridge(), code, timeout)
+        return _exec.run(get_bridge(), code, timeout)
