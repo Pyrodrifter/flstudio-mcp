@@ -87,6 +87,10 @@ def verify_write(call, notes, channel, pattern, mode):
         out["extra_on_target"] = len(on_target - want)
     if elsewhere:
         out["misplaced_on"] = elsewhere
+    elif want and not found:
+        out["hint"] = ("No notes landed anywhere in the pattern: the Piano-roll script "
+                       "probably didn't run. After an FL restart, run 'MCP Apply' once "
+                       "from the Piano roll's Scripting menu, then retry.")
     return out
 
 
