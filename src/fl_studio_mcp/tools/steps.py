@@ -36,6 +36,7 @@ def write_steps(bridge, channel: int, steps: List[Step], clear: bool = True,
         results.append(bridge.call(protocol.CMD_STEPS_WRITE, {
             "channel": channel, "steps": rows[i:i + _CHUNK],
             "clear": clear and i == 0, "pattern": pattern if i == 0 else None,
+            "undo_point": i == 0,        # one undo step per write, not per chunk
         }, timeout=10.0))
     missing = [m for r in results for m in r.get("missing", [])]
     first = results[0]

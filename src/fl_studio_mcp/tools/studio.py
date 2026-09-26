@@ -51,8 +51,11 @@ def register(mcp: FastMCP) -> None:
         redo: Annotated[bool, Field(description="Redo instead of undo.")] = False,
     ) -> dict:
         """Step FL's own undo history (Ctrl+Z / redo). It is FL's global
-        history, so it also undoes edits made by hand -- call with steps=0
-        first to see the current step's description (`hint`)."""
+        history, so it also undoes edits made by hand. Every MCP write adds
+        its own undo point, so undo right after an MCP write reverts exactly
+        that write (verified by .flp diff on FL 26.1). `hint` is FL's
+        position "N/M" (1 = newest step), not a description; steps=0 only
+        reports it."""
         return get_bridge().call(protocol.CMD_UNDO, {"steps": steps, "redo": redo})
 
     @mcp.tool(annotations={"title": "Project swing", **_WR})

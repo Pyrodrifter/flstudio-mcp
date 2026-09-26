@@ -1105,6 +1105,17 @@ def _active_steps(idx, total):
     return [s for s in range(total) if channels.getGridBit(idx, s)]
 
 
+def _save_undo(name, flag_name):
+    """Create an FL undo point before an API edit. Step, playlist, pattern
+    and mixer edits made through the API don't add undo history on their own
+    (verified on FL 26.1), so without this fl_undo would revert the edit
+    BEFORE ours -- possibly the user's."""
+    try:
+        general.saveUndo(name, getattr(midi, flag_name, 0))
+    except Exception:
+        pass
+
+
 def _h_steps_write(p):
     """Set step-sequencer steps on one channel of the current (or given)
     pattern, then read the grid back. p: channel, steps [[step, vel0-1|null,
@@ -1114,6 +1125,8 @@ def _h_steps_write(p):
     if p.get("pattern"):
         patterns.jumpToPattern(int(p["pattern"]))
     pat = patterns.patternNumber()
+    if p.get("undo_point", True):       # the server sends it on the first chunk only
+        _save_undo("MCP: steps on %s" % channels.getChannelName(idx), "UF_SS")
     steps = p.get("steps") or []
     total = max([_pattern_steps(pat)] + [int(s[0]) + 1 for s in steps])
     if p.get("clear"):
@@ -1236,6 +1249,7 @@ def _channel_props(idx):
 def _h_swing(p):
     """Project-wide swing (FL 26: channels.getSwing() takes no channel)."""
     if p.get("value") is not None:
+        _save_undo("MCP: swing", "UF_None")
         channels.setSwing(int(p["value"]))
     return {"swing": channels.getSwing()}
 
@@ -1245,6 +1259,7 @@ def _h_channel_props(p):
     idx = int(p["channel"])
     _check_channel(idx)
     if p.get("pitch_cents") is not None:
+        _save_undo("MCP: pitch %s" % channels.getChannelName(idx), "UF_None")
         channels.setChannelPitch(idx, float(p["pitch_cents"]), 1)
     return _channel_props(idx)
 
@@ -1269,6 +1284,7 @@ def _h_playlist_set_track(p):
     if t < 1 or t > playlist.trackCount():
         raise _ClientError("track %d out of range (1-%d)" % (t, playlist.trackCount()),
                            code="bad_param")
+    _save_undo("MCP: playlist track %d" % t, "UF_PL")
     if p.get("name") is not None:
         playlist.setTrackName(t, str(p["name"]))
     if p.get("color") is not None or p.get("r") is not None:
@@ -1284,6 +1300,8 @@ def _h_pattern_set(p):
     if pat < 1 or pat > patterns.patternCount():
         raise _ClientError("pattern %d out of range (1-%d)" % (pat, patterns.patternCount()),
                            code="bad_param")
+    if any(p.get(k) is not None for k in ("name", "color", "r", "length_beats")):
+        _save_undo("MCP: pattern %d" % pat, "UF_None")
     if p.get("name") is not None:
         patterns.setPatternName(pat, str(p["name"]))
     if p.get("color") is not None or p.get("r") is not None:
@@ -1330,6 +1348,7 @@ def _h_mixer_slots(p):
 def _h_mixer_set_slot(p):
     """Set one slot's mix level (0..1) / mute, or all slots on/off."""
     track = int(p["track"])
+    _save_undo("MCP: mixer track %d slots" % track, "UF_Plugin")
     if p.get("slots_enabled") is not None:
         mixer.enableTrackSlots(track, bool(p["slots_enabled"]))
     if p.get("slot") is not None:
