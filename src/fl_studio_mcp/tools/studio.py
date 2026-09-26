@@ -82,8 +82,16 @@ def register(mcp: FastMCP) -> None:
         count: Annotated[int, Field(ge=1, le=25, description="How many tracks.")] = 10,
     ) -> dict:
         """Playlist tracks: name, colour, mute, solo. (Clip placement per track
-        comes from fl_read_project.)"""
-        return get_bridge().call(protocol.CMD_PLAYLIST_TRACKS, {"start": start, "count": count})
+        comes from fl_read_project.) Pages internally: FL replies are capped
+        at ~1 KB."""
+        bridge = get_bridge()
+        rows, nxt, end, total = [], start, start + count - 1, None
+        while nxt is not None and nxt <= end:
+            r = bridge.call(protocol.CMD_PLAYLIST_TRACKS, {"start": nxt, "count": end - nxt + 1})
+            total = r.get("total")
+            rows += r.get("tracks", [])
+            nxt = r.get("next_start")
+        return {"total": total, "tracks": rows}
 
     @mcp.tool(annotations={"title": "Set playlist track name/colour/mute", **_WR})
     def fl_set_playlist_track(

@@ -80,6 +80,7 @@ REQUEST_ID_LEN = 8
 _HEADER_LEN = 1 + 3 + 1 + REQUEST_ID_LEN
 
 HEARTBEAT_INTERVAL = 0.5  # seconds between heartbeats
+MAX_SYSEX_OUT = 1000      # FL silently drops outgoing SysEx above ~1 KB
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +249,15 @@ def _send_message(direction, request_id, payload):
         return
     body = _encode_message(direction, request_id, payload)
     framed = bytes([0xF0]) + body + bytes([0xF7])
+    if direction == DIR_RESPONSE and len(framed) > MAX_SYSEX_OUT:
+        # FL drops outgoing SysEx above ~1 KB without an error (8 playlist
+        # tracks timed out, 6 worked), so the server would just time out.
+        # Send a small, explicit error instead.
+        body = _encode_message(direction, request_id, {
+            "v": PROTOCOL_VERSION, "ok": False, "code": "too_large",
+            "error": "response too large (%d bytes, FL limit ~%d): request fewer items"
+                     % (len(framed), MAX_SYSEX_OUT)})
+        framed = bytes([0xF0]) + body + bytes([0xF7])
     try:
         _send_sysex_fn(framed)
     except Exception as e:
@@ -1274,12 +1284,22 @@ def _playlist_track(t):
 
 
 def _h_playlist_tracks(p):
-    """Playlist tracks (1-based), paged: name, colour, mute, solo."""
+    """Playlist tracks (1-based): name, colour hex, mute, solo. Budget-paged
+    (next_start) to stay under FL's ~1 KB SysEx reply limit."""
     total = playlist.trackCount()
     start = max(1, int(p.get("start", 1)))
     count = max(1, min(25, int(p.get("count", 10))))
-    rows = [_playlist_track(t) for t in range(start, min(total, start + count - 1) + 1)]
-    return {"total": total, "tracks": rows}
+    rows, t = [], start
+    while t <= min(total, start + count - 1):
+        rows.append({"track": t, "name": playlist.getTrackName(t),
+                     "color": _color_out(playlist.getTrackColor(t))["hex"],
+                     "muted": bool(playlist.isTrackMuted(t)), "solo": bool(playlist.isTrackSolo(t))})
+        if len(json.dumps(rows, separators=(",", ":"))) > 520 and len(rows) > 1:
+            rows.pop()
+            break
+        t += 1
+    return {"total": total, "tracks": rows,
+            "next_start": t if t <= min(total, start + count - 1) else None}
 
 
 def _h_playlist_set_track(p):
