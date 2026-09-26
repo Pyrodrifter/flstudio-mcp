@@ -124,12 +124,23 @@ def register(mcp: FastMCP) -> None:
             raise ValueError("patterns %s have no notes in the project (have %s)" % (bad, sorted(known)))
         res = flp_writer.write_clips(src, dst, arrangement, [c.model_dump() for c in clips],
                                      replace=replace)
-        check = [a for a in flp_reader.summarize(flp_reader.parse(dst))["arrangements"]
-                 if a["arrangement"] == arrangement][0]["clips"]
+        out = flp_reader.parse(dst)
+        arrs_src = flp_reader.summarize(proj)["arrangements"]
+        arrs_out = flp_reader.summarize(out)["arrangements"]
+        check = [a for a in arrs_out if a["arrangement"] == arrangement][0]["clips"]
         have = {(c["pattern"], c["track"], c["bar"], c["length_bars"]) for c in check if "pattern" in c}
         missing = [c.model_dump() for c in clips
                    if (c.pattern, c.track, float(c.bar), float(c.length_bars)) not in have]
-        return {**res, "source": src, "verified": not missing, "missing": missing,
+        before = [a for a in arrs_src if a["arrangement"] == arrangement][0]["clips"]
+        unchanged = {
+            "channels": out["channels"] == proj["channels"],
+            "patterns": out["patterns"] == proj["patterns"],
+            "other_arrangements": [a for a in arrs_out if a["arrangement"] != arrangement]
+                                  == [a for a in arrs_src if a["arrangement"] != arrangement],
+            "existing_clips": replace or all(c in check for c in before),
+        }
+        return {**res, "source": src, "verified": not missing and all(unchanged.values()),
+                "missing": missing, "unchanged": unchanged,
                 "next_step": "In FL: File > Open '%s'. It is your current project plus the new "
                              "clips; don't edit in FL before opening it." % os.path.basename(dst)}
 
