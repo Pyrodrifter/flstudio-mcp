@@ -7,14 +7,22 @@ fall back to FL's newest autosave in Projects/Backup and report its age.
 """
 from __future__ import annotations
 
+import os
 import time
-from typing import Annotated, Optional
+from typing import Annotated, List, Optional
 
 from fastmcp import FastMCP
-from pydantic import Field
+from pydantic import BaseModel, Field
 
-from .. import flp_reader, protocol
+from .. import flp_reader, flp_writer, protocol
 from ..connection import get_bridge
+
+
+class PlaylistClip(BaseModel):
+    pattern: int = Field(ge=1, description="Pattern number.")
+    track: int = Field(ge=1, le=500, description="Playlist track (1-based).")
+    bar: float = Field(ge=1, description="Start bar as FL shows it (1 = song start).")
+    length_bars: float = Field(8, gt=0, description="Clip length in bars.")
 
 
 def _load(save_first: bool, path: Optional[str]):
@@ -85,6 +93,45 @@ def register(mcp: FastMCP) -> None:
         can be verified or edited round-trip."""
         proj, meta = _load(save_first, path)
         return {**meta, **flp_reader.notes_view(proj, pattern, channel)}
+
+    @mcp.tool(annotations={"title": "Arrange playlist clips (writes a project copy)",
+                           "readOnlyHint": False, "destructiveHint": False,
+                           "idempotentHint": False, "openWorldHint": True})
+    def fl_arrange_playlist(
+        clips: List[PlaylistClip],
+        arrangement: Annotated[int, Field(ge=0, description="Arrangement index as in fl_read_project (0 = first).")],
+        replace: Annotated[bool, Field(description="Drop the arrangement's existing clips instead of adding to them.")] = False,
+        output_name: Annotated[Optional[str], Field(description="File name for the copy (default '<project> - Arranged.flp').")] = None,
+    ) -> dict:
+        """Place pattern clips in the playlist. FL's API can't do this live,
+        so this saves the open project, writes a COPY with the clips added
+        (every other byte unchanged; the original is never overwritten) and
+        re-reads the copy to verify. The user then opens the copy in FL --
+        edits made in FL after this call are NOT in the copy."""
+        proj, meta = _load(True, None)
+        if not meta.get("saved"):
+            raise RuntimeError("Could not save the open project first (%s); refusing to write a "
+                               "copy that might miss recent edits." % meta.get("save_error"))
+        src = meta["file"]
+        folder, stem = os.path.dirname(src), os.path.splitext(os.path.basename(src))[0]
+        base = os.path.splitext(output_name)[0] if output_name else "%s - Arranged" % stem
+        dst, n = os.path.join(folder, base + ".flp"), 2
+        while os.path.exists(dst):
+            dst, n = os.path.join(folder, "%s %d.flp" % (base, n)), n + 1
+        known = set(proj["patterns"])
+        bad = sorted({c.pattern for c in clips} - known)
+        if bad:
+            raise ValueError("patterns %s have no notes in the project (have %s)" % (bad, sorted(known)))
+        res = flp_writer.write_clips(src, dst, arrangement, [c.model_dump() for c in clips],
+                                     replace=replace)
+        check = [a for a in flp_reader.summarize(flp_reader.parse(dst))["arrangements"]
+                 if a["arrangement"] == arrangement][0]["clips"]
+        have = {(c["pattern"], c["track"], c["bar"], c["length_bars"]) for c in check if "pattern" in c}
+        missing = [c.model_dump() for c in clips
+                   if (c.pattern, c.track, float(c.bar), float(c.length_bars)) not in have]
+        return {**res, "source": src, "verified": not missing, "missing": missing,
+                "next_step": "In FL: File > Open '%s'. It is your current project plus the new "
+                             "clips; don't edit in FL before opening it." % os.path.basename(dst)}
 
     @mcp.tool(annotations={"title": "Save project (Ctrl+S)", "readOnlyHint": False,
                            "destructiveHint": False, "idempotentHint": True,

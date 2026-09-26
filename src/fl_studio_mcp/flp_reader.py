@@ -100,9 +100,17 @@ def _score(data: bytes, i: int, window: int = 6) -> int:
 
 
 def _events(data: bytes) -> Iterator[Tuple[int, bytes]]:
+    for eid, _start, p0, p1 in event_spans(data):
+        yield eid, data[p0:p1]
+
+
+def event_spans(data: bytes) -> Iterator[Tuple[int, int, int, int]]:
+    """(event id, offset of the id byte, payload start, payload end) -- the
+    byte spans flp_writer needs to splice a single event."""
     i, n = 0, len(data)
     while i < n:
         eid = data[i]
+        start = i
         i += 1
         if eid < 64:
             size = 1
@@ -125,7 +133,7 @@ def _events(data: bytes) -> Iterator[Tuple[int, bytes]]:
             size, i = _varint(data, i)
             if size is None:
                 return
-        yield eid, data[i:i + size]
+        yield eid, start, i, i + size
         i += size
 
 

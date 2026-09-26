@@ -20,8 +20,9 @@ def _note(channel, key, pos, length, vel=100):
                        120, 0, 64, 0, 64, vel, 128, 128)
 
 
-def _clip(pattern, pos, length, track):
+def _clip(pattern, pos, length, track, clip_id=0):
     item = struct.pack("<IHHIHH", pos, 20480, 20480 + pattern, length, 500 - track, 0)
+    item += b"\x00" * (32 - len(item)) + struct.pack("<I", clip_id)
     return item + b"\x00" * (88 - len(item))
 
 
@@ -78,3 +79,34 @@ def _varint(n):
         out.append(b | (0x80 if n else 0))
         if not n:
             return bytes(out)
+
+
+def test_writer_round_trip_and_add(tmp_path):
+    from fl_studio_mcp import flp_writer as w
+    items = _clip(5, 0, 3072, 4, 1) + _clip(6, 3072, 768, 5, 2)
+    events = (bytes([199, 12]) + b"26.1.0.5530\x00"
+              + bytes([99]) + struct.pack("<H", 0) + _text(241, "Arrangement")
+              + bytes([233]) + _varint(len(items)) + items)
+    src = tmp_path / "src.flp"
+    src.write_bytes(_flp(events))
+    same = tmp_path / "same.flp"
+    w.write_clips(str(src), str(same), 0, [])
+    assert same.read_bytes() == src.read_bytes()
+    out = tmp_path / "out.flp"
+    res = w.write_clips(str(src), str(out), 0, [{"pattern": 2, "track": 1, "bar": 9, "length_bars": 8}])
+    assert res["total_clips"] == 3
+    clips = r.summarize(r.parse(str(out)))["arrangements"][0]["clips"]
+    assert len(clips) == 3
+    assert {"track": 1, "bar": 9.0, "length_bars": 8.0, "pattern": 2} in clips
+    payload = [raw for eid, raw in r._events(out.read_bytes()[22:]) if eid == 233][0]
+    ids = [struct.unpack_from("<I", payload, o + 32)[0] for o in range(0, len(payload), 88)]
+    assert len(set(ids)) == 3                                  # new clip got a fresh id
+
+
+def test_writer_refuses_to_overwrite_source(tmp_path):
+    import pytest
+    from fl_studio_mcp import flp_writer as w
+    src = tmp_path / "a.flp"
+    src.write_bytes(_flp(bytes([199, 12]) + b"26.1.0.5530\x00"))
+    with pytest.raises(ValueError):
+        w.write_clips(str(src), str(src), 0, [])
